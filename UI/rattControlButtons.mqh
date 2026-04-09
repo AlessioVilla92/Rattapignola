@@ -1,12 +1,11 @@
 //+------------------------------------------------------------------+
 //|                                      rattControlButtons.mqh      |
-//|           Rattapignola EA v1.0.0 — Control Buttons               |
+//|           Rattapignola EA v1.1 — Control Buttons                  |
 //|                                                                  |
-//|  4 buttons: START, PAUSE, RECOVERY, STOP                        |
-//|  Firefly palette colors                                          |
+//|  3 buttons stile SugaraPivot: START, RECOVERY, STOP              |
+//|  PAUSE/RESUME integrato nel bottone START                         |
 //|                                                                  |
-//|  v1.0.0: STOP resetta stato hedge (pending/active/ticket)        |
-//|           + chiama HedgeDeinit() per rimuovere linee fucsia      |
+//|  v1.1: 3 bottoni (era 4), START toggle ACTIVE/PAUSED             |
 //+------------------------------------------------------------------+
 #property copyright "Rattapignola (C) 2026"
 
@@ -14,7 +13,6 @@
 //| Button Name Constants                                            |
 //+------------------------------------------------------------------+
 #define BTN_START    "RATT_BTN_START"
-#define BTN_PAUSE    "RATT_BTN_PAUSE"
 #define BTN_RECOVER  "RATT_BTN_RECOVER"
 #define BTN_STOP     "RATT_BTN_STOP"
 
@@ -23,7 +21,6 @@
 //+------------------------------------------------------------------+
 #define CLR_BTN_START    C'0,130,80'
 #define CLR_BTN_ACTIVE   C'0,200,120'
-#define CLR_BTN_PAUSE    C'180,120,0'
 #define CLR_BTN_RESUME   C'0,160,220'
 #define CLR_BTN_RECOVER  C'0,140,140'
 #define CLR_BTN_STOP     C'180,30,30'
@@ -66,24 +63,23 @@ void CreateControlButton(string name, int x, int y, int width, int height,
 }
 
 //+------------------------------------------------------------------+
-//| CreateControlButtons — 4 buttons: START, PAUSE, RECOVERY, STOP |
+//| CreateControlButtons — 3 buttons: START, RECOVERY, STOP          |
 //+------------------------------------------------------------------+
 void CreateControlButtons(int startX, int startY, int panelWidth)
 {
    int pad = 15;
    int btnGap = 8;
-   int btnW = (panelWidth - 2 * pad - 3 * btnGap) / 4;
-   int btnH = 28;
+   int btnW = (panelWidth - 2 * pad - 2 * btnGap) / 3;
+   int btnH = 32;
    int bx = startX + pad;
-   int by = startY + 22;
+   int by = startY + 24;
 
    CreateControlButton(BTN_START, bx, by, btnW, btnH, "START", CLR_BTN_START);
-   CreateControlButton(BTN_PAUSE, bx + btnW + btnGap, by, btnW, btnH, "PAUSE", CLR_BTN_PAUSE);
-   CreateControlButton(BTN_RECOVER, bx + 2 * (btnW + btnGap), by, btnW, btnH, "RECOVERY", CLR_BTN_RECOVER);
-   CreateControlButton(BTN_STOP, bx + 3 * (btnW + btnGap), by, btnW, btnH, "STOP", CLR_BTN_STOP);
+   CreateControlButton(BTN_RECOVER, bx + btnW + btnGap, by, btnW, btnH, "RECOVERY", CLR_BTN_RECOVER);
+   CreateControlButton(BTN_STOP, bx + 2 * (btnW + btnGap), by, btnW, btnH, "STOP", CLR_BTN_STOP);
 
    UpdateButtonFeedback();
-   AdLogI(LOG_CAT_UI, "Control buttons created (4 buttons)");
+   AdLogI(LOG_CAT_UI, "Control buttons created (3 buttons)");
 }
 
 //+------------------------------------------------------------------+
@@ -91,28 +87,21 @@ void CreateControlButtons(int startX, int startY, int panelWidth)
 //+------------------------------------------------------------------+
 void UpdateButtonFeedback()
 {
-   // START
+   // START: shows RUNNING (active), PAUSE (click to pause), RESUME (paused)
    if(g_systemState == STATE_ACTIVE)
    {
       ObjectSetInteger(0, BtnObjName(BTN_START), OBJPROP_BGCOLOR, CLR_BTN_ACTIVE);
       ObjectSetString(0, BtnObjName(BTN_START), OBJPROP_TEXT, "RUNNING");
    }
+   else if(g_systemState == STATE_PAUSED)
+   {
+      ObjectSetInteger(0, BtnObjName(BTN_START), OBJPROP_BGCOLOR, CLR_BTN_RESUME);
+      ObjectSetString(0, BtnObjName(BTN_START), OBJPROP_TEXT, "RESUME");
+   }
    else
    {
       ObjectSetInteger(0, BtnObjName(BTN_START), OBJPROP_BGCOLOR, CLR_BTN_START);
       ObjectSetString(0, BtnObjName(BTN_START), OBJPROP_TEXT, "START");
-   }
-
-   // PAUSE / RESUME
-   if(g_systemState == STATE_PAUSED)
-   {
-      ObjectSetString(0, BtnObjName(BTN_PAUSE), OBJPROP_TEXT, "RESUME");
-      ObjectSetInteger(0, BtnObjName(BTN_PAUSE), OBJPROP_BGCOLOR, CLR_BTN_RESUME);
-   }
-   else
-   {
-      ObjectSetString(0, BtnObjName(BTN_PAUSE), OBJPROP_TEXT, "PAUSE");
-      ObjectSetInteger(0, BtnObjName(BTN_PAUSE), OBJPROP_BGCOLOR, CLR_BTN_PAUSE);
    }
 }
 
@@ -124,38 +113,34 @@ void HandleButtonClick(string sparam)
    // Reset button state (OBJ_BUTTON toggles on click)
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
 
-   // START — accetta IDLE, ERROR e INITIALIZING (l'utente puo' forzare l'avvio)
+   // START — ciclo: IDLE/ERROR/INIT → ACTIVE → PAUSED → ACTIVE
    if(sparam == BtnObjName(BTN_START))
    {
-      if(g_systemState == STATE_IDLE || g_systemState == STATE_ERROR || g_systemState == STATE_INITIALIZING)
+      if(g_systemState == STATE_ACTIVE)
       {
+         // ACTIVE → PAUSED
+         g_systemState = STATE_PAUSED;
+         AdLogI(LOG_CAT_UI, "Button: PAUSE (via START)");
+         Alert("Rattapignola: System PAUSED | ", _Symbol);
+      }
+      else if(g_systemState == STATE_PAUSED)
+      {
+         // PAUSED → ACTIVE (resume)
+         g_systemState = STATE_ACTIVE;
+         AdLogI(LOG_CAT_UI, "Button: RESUME -> ACTIVE (via START)");
+         Alert("Rattapignola: System RESUMED | ", _Symbol);
+      }
+      else if(g_systemState == STATE_IDLE || g_systemState == STATE_ERROR || g_systemState == STATE_INITIALIZING)
+      {
+         // IDLE/ERROR/INIT → ACTIVE
          g_systemState = STATE_ACTIVE;
          AdLogI(LOG_CAT_UI, "Button: START -> ACTIVE");
 
-         // Alert visivo — conferma avvio sistema con info chiave
          Alert("Rattapignola: System ACTIVE | ",
                _Symbol, " ", EnumToString(Period()),
                " | Engine: UTBot v2.01",
                " | Magic: ", MagicNumber,
                " | Balance: ", DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2));
-      }
-      UpdateButtonFeedback();
-      ChartRedraw();
-      return;
-   }
-
-   // PAUSE / RESUME
-   if(sparam == BtnObjName(BTN_PAUSE))
-   {
-      if(g_systemState == STATE_ACTIVE)
-      {
-         g_systemState = STATE_PAUSED;
-         AdLogI(LOG_CAT_UI, "Button: PAUSE");
-      }
-      else if(g_systemState == STATE_PAUSED)
-      {
-         g_systemState = STATE_ACTIVE;
-         AdLogI(LOG_CAT_UI, "Button: RESUME -> ACTIVE");
       }
       UpdateButtonFeedback();
       ChartRedraw();
@@ -176,6 +161,7 @@ void HandleButtonClick(string sparam)
    if(sparam == BtnObjName(BTN_STOP))
    {
       AdLogI(LOG_CAT_UI, "Button: STOP — closing all");
+      Alert("Rattapignola: STOP — Closing all orders | ", _Symbol);
       CloseAllOrders();
       // Cleanup hedge state on all cycles
       if(EnableHedge)

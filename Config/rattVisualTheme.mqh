@@ -22,12 +22,12 @@
 //| BORDI — Verde campagna                                           |
 //+------------------------------------------------------------------+
 #define RATT_BORDER          C'28,90,45'       // bordo pannello
-#define RATT_BORDER_FRAME    C'55,180,75'      // verde campagna perimetrale dashboard
+#define RATT_BORDER_FRAME    C'255,220,50'     // firefly perimetrale dashboard (stile SugaraPivot gold)
 
 // Alias dashboard
 #define RATT_PANEL_BG        RATT_BG_PANEL
 #define RATT_PANEL_BORDER    RATT_BORDER
-#define RATT_SIDE_BORDER     C'55,180,75'      // Verde campagna per side panels
+#define RATT_SIDE_BORDER     C'180,155,30'     // Firefly dim per side panels
 
 //+------------------------------------------------------------------+
 //| ACCENT — Lucciole                                                |
@@ -66,16 +66,16 @@
 //+------------------------------------------------------------------+
 //| CANDELE CHART                                                    |
 //+------------------------------------------------------------------+
-#define RATT_CANDLE_BULL     C'80,220,100'     // verde prato
-#define RATT_CANDLE_BEAR     C'255,85,75'      // rosso tramonto
+#define RATT_CANDLE_BULL     C'38,166,154'     // teal (UTBotAdaptive)
+#define RATT_CANDLE_BEAR     C'239,83,80'      // coral (UTBotAdaptive)
 
 //+------------------------------------------------------------------+
 //| OVERLAY CANALE — Trailing stop                                   |
 //+------------------------------------------------------------------+
 #define RATT_CHAN_UPPER_CLR   C'80,220,100'     // Verde prato (trailing bull)
 #define RATT_CHAN_LOWER_CLR   C'255,85,75'      // Rosso tramonto (trailing bear)
-#define RATT_CHAN_TRAIL_BULL  C'80,220,100'     // Verde prato trailing bull
-#define RATT_CHAN_TRAIL_BEAR  C'255,85,75'      // Rosso tramonto trailing bear
+#define RATT_CHAN_TRAIL_BULL  C'38,166,154'     // Teal trailing bull (UTBotAdaptive)
+#define RATT_CHAN_TRAIL_BEAR  C'239,83,80'      // Coral trailing bear (UTBotAdaptive)
 #define RATT_CHAN_MID_UP_CLR  C'80,220,100'     // Midline bullish
 #define RATT_CHAN_MID_DN_CLR  C'255,85,75'      // Midline bearish
 #define RATT_CHAN_MID_FLAT_CLR C'255,220,50'    // Midline flat (= RATT_FIREFLY)
@@ -93,20 +93,26 @@
 #define RATT_HS_CHAN_WIDTH    1                 // Spessore 1
 
 //+------------------------------------------------------------------+
-//| FRECCE SEGNALE                                                   |
+//| FRECCE SEGNALE — 4 livelli ER (UTBotAdaptive style)              |
 //+------------------------------------------------------------------+
-#define RATT_ARROW_STRONG_BUY  C'80,255,120'   // Strong BUY — verde brillante
-#define RATT_ARROW_STRONG_SELL C'255,60,60'    // Strong SELL — rosso brillante
-#define RATT_ARROW_WEAK_BUY    C'50,140,70'    // Weak BUY — verde scuro
-#define RATT_ARROW_WEAK_SELL   C'160,50,50'    // Weak SELL — rosso scuro
-#define RATT_ARROW_SIZE        5               // Arrow width
-#define RATT_ARROW_OFFSET      0.15            // Offset multiplier x ATR
+#define RATT_ARROW_BUY_0       C'76,175,80'    // ER >= 0.60 — FORTE (verde scuro)
+#define RATT_ARROW_BUY_1       C'139,195,74'   // ER 0.35-0.59 — MODERATO (verde chiaro)
+#define RATT_ARROW_BUY_2       C'255,193,7'    // ER 0.15-0.34 — DEBOLE (giallo)
+#define RATT_ARROW_BUY_3       C'120,120,120'  // ER < 0.15 — RANGING (grigio)
+#define RATT_ARROW_SELL_0      C'239,83,80'    // ER >= 0.60 — FORTE (rosso)
+#define RATT_ARROW_SELL_1      C'255,138,101'  // ER 0.35-0.59 — MODERATO (arancio)
+#define RATT_ARROW_SELL_2      C'255,193,7'    // ER 0.15-0.34 — DEBOLE (giallo)
+#define RATT_ARROW_SELL_3      C'120,120,120'  // ER < 0.15 — RANGING (grigio)
+#define RATT_ARROW_SIZE        2               // Arrow width (UTBotAdaptive)
+#define RATT_ARROW_OFFSET      0.5             // Offset multiplier x ATR (UTBotAdaptive)
 
 //+------------------------------------------------------------------+
 //| ENTRY/EXIT                                                       |
 //+------------------------------------------------------------------+
 #define RATT_ENTRY_BUY_CLR   RATT_BUY
 #define RATT_ENTRY_SELL_CLR  RATT_SELL
+#define RATT_ENTRY_LEVEL_CLR    C'148,0,211'    // Viola — entry level line (UTBotAdaptive)
+#define RATT_TRIGGER_CANDLE_CLR C'255,235,59'   // Giallo — highlight trigger candle
 
 //+------------------------------------------------------------------+
 //| TP TARGET                                                        |
@@ -132,8 +138,8 @@
 //| FONT                                                             |
 //+------------------------------------------------------------------+
 #define RATT_FONT_MONO       "Consolas"
-#define RATT_FONT_TITLE      "Arial Black"
-#define RATT_FONT_SECTION    "Arial Bold"
+#define RATT_FONT_TITLE      "Segoe UI Bold"
+#define RATT_FONT_SECTION    "Segoe UI Semibold"
 #define RATT_FONT_SIZE       9
 
 // Alias dashboard
@@ -141,25 +147,31 @@
 #define RATT_FONT_SIZE_BODY  RATT_FONT_SIZE
 
 //+------------------------------------------------------------------+
-//| DASHBOARD DIMENSIONI                                             |
+//| DASHBOARD DIMENSIONI (layout 2 colonne stile SugaraPivot)        |
 //+------------------------------------------------------------------+
 #define RATT_DASH_X          10
 #define RATT_DASH_Y          25
-#define RATT_DASH_W          640
+#define RATT_DASH_W          690               // full width (2 colonne)
+#define RATT_DASH_COL_W      345               // larghezza singola colonna
 #define RATT_PAD             14
 #define RATT_GAP             4
 
-#define RATT_H_HEADER        36                // Header
-#define RATT_H_TOPBAR        32                // TitleBar: Pair + Price + Spread + State
-#define RATT_H_SYSSTATUS     76
-#define RATT_H_ENGINE        88
-#define RATT_H_FILTERS       22
-#define RATT_H_LASTSIG       76
-#define RATT_H_CYCLES        (26 + 4 * 16 + 4)
-#define RATT_H_PL            88
-#define RATT_H_CONTROLS      52
-#define RATT_H_STATUSBAR     20
+#define RATT_H_TITLE         50                // Title panel (full width)
+#define RATT_H_MODE          40                // Mode/Symbol panel (full width)
+#define RATT_H_ENGINE        145               // UTBot Engine (left col)
+#define RATT_H_SYSSTATUS     145               // System Status (right col)
+#define RATT_H_PL            115               // P&L Session (left col)
+#define RATT_H_CYCLES        145               // Active Cycles (right col)
+#define RATT_H_STATUSBAR     20                // Status bar (full width)
 #define RATT_SIDE_W          210
+
+//+------------------------------------------------------------------+
+//| PANEL BACKGROUND — Sfumature differenziate per sezione            |
+//+------------------------------------------------------------------+
+#define RATT_BG_ENGINE       C'10,18,30'       // Engine panel
+#define RATT_BG_PL           C'8,12,22'        // P&L panel (piu' scura)
+#define RATT_BG_CYCLES       C'12,20,32'       // Cycles panel
+#define RATT_BG_SIGNALS      C'14,24,36'       // Signals panel
 
 //+------------------------------------------------------------------+
 //| ApplyChartTheme() — Applica palette Notti Estive al chart        |

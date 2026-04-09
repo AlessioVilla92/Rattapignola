@@ -89,8 +89,8 @@
 #include "Virtual/rattVirtualTrader.mqh"
 
 // === Layer 7: UI ===
-#include "UI/rattDashboard.mqh"
 #include "UI/rattControlButtons.mqh"
+#include "UI/rattDashboard.mqh"
 #include "UI/rattChannelOverlay.mqh"
 #include "UI/rattSignalMarkers.mqh"
 
@@ -516,7 +516,6 @@ void OnChartEvent(const int id, const long &lparam,
       if(ShowChannelOverlay && g_engineReady)
       {
          UpdateChannelLiveEdge();
-         RedrawOverlayFill();
       }
       ChartRedraw();
    }
