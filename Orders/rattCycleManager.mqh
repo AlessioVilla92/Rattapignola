@@ -4,6 +4,36 @@
 //|                                                                  |
 //|  Manages trade cycles: create, monitor, expire, detect fills     |
 //|  HedgeSmart: 13 campi HS in CycleRecord (v1.7.0 + v1.7.2)      |
+//|                                                                  |
+//|  CYCLE STATE MACHINE:                                            |
+//|                                                                  |
+//|    IDLE ──[CreateCycle()]──► PENDING ──[DetectFill()]──► ACTIVE   |
+//|                                │                          │      |
+//|                                │                          │      |
+//|                          [CheckExpiry()]          [HsPlaceOrder()]|
+//|                                │                          │      |
+//|                                ▼                          ▼      |
+//|                             CLOSED              HEDGING           |
+//|                                                    │             |
+//|                                              [MonitorActive()    |
+//|                                               HsCleanup()]      |
+//|                                                    │             |
+//|                                                    ▼             |
+//|                                                 CLOSED           |
+//|                                                                  |
+//|  Transizioni:                                                    |
+//|    IDLE → PENDING:   CreateCycle() piazza ordine (Market/Limit/  |
+//|                      Stop), slot allocato in g_cycles[]          |
+//|    PENDING → ACTIVE: DetectFill() conferma esecuzione broker     |
+//|                      (Layer 1: OnTradeTransaction, Layer 2: Poll)|
+//|    PENDING → CLOSED: CheckExpiry() annulla dopo N barre senza   |
+//|                      fill (pendingExpiry da preset TF)           |
+//|    ACTIVE → HEDGING: HsPlaceOrder() apre hedge (Magic+1) quando |
+//|                      prezzo raggiunge trigger% del canale        |
+//|    ACTIVE → CLOSED:  MonitorActive() rileva chiusura posizione   |
+//|                      (TP hit, SL, S2S flip, SQZ exit, manuale)  |
+//|    HEDGING → CLOSED: MonitorActive() + HsCleanup() chiude sia   |
+//|                      soup che hedge, contabilizza P&L separati   |
 //+------------------------------------------------------------------+
 #property copyright "Rattapignola (C) 2026"
 
@@ -251,6 +281,11 @@ void DetectFill(const MqlTradeTransaction& trans,
                 g_cycles[i].direction > 0 ? "BUY" : "SELL",
                 FormatPrice(dealPrice), slippage));
 
+         Alert(StringFormat("Rattapignola FILL #%d %s @ %s | Slip=%.1fp | %s",
+               g_cycles[i].cycleID,
+               g_cycles[i].direction > 0 ? "BUY" : "SELL",
+               FormatPrice(dealPrice), slippage, _Symbol));
+
          // v1.8.0: Soup fillata → piazza HS pending (ordine STOP opposto al Soup).
          // g_lastSignal contiene le bande correnti dall'ultimo EngineCalculate.
          // HsPlaceOrder ha guard interni (hsPending/hsActive → skip).
@@ -324,6 +359,8 @@ void PollFills()
          {
             g_cycles[i].state = CYCLE_CLOSED;
             AdLogW(LOG_CAT_CYCLE, StringFormat("POLL DISAPPEARED #%d — closing cycle", g_cycles[i].cycleID));
+            Alert(StringFormat("Rattapignola ERRORE: Ordine #%d SPARITO — ciclo chiuso | %s",
+                  g_cycles[i].cycleID, _Symbol));
          }
       }
    }
@@ -357,6 +394,11 @@ void CheckExpiry()
       {
          AdLogI(LOG_CAT_CYCLE, StringFormat("EXPIRING #%d after %d/%d bars",
                 g_cycles[i].cycleID, barsElapsed, g_pendingExpiry));
+
+         Alert(StringFormat("Rattapignola PENDING SCADUTO #%d %s | %d barre | %s",
+               g_cycles[i].cycleID,
+               g_cycles[i].direction > 0 ? "BUY_STOP" : "SELL_STOP",
+               barsElapsed, _Symbol));
 
          DeletePendingOrder(g_cycles[i].ticket);
          g_cycles[i].state = CYCLE_CLOSED;
@@ -514,6 +556,9 @@ int CloseOppositeOnSignal(int newDirection)
             if(netPL > 0) { g_sessionWins++; g_dailyWins++; }
             else          { g_sessionLosses++; g_dailyLosses++; }
 
+            Alert(StringFormat("Rattapignola S2S FLIP CHIUSO #%d %s | P&L=%.2f | %s",
+                  g_cycles[i].cycleID,
+                  g_cycles[i].direction > 0 ? "BUY" : "SELL", netPL, _Symbol));
             AddFeedItem("S2S flip " + (netPL > 0 ? "+" : "") + DoubleToString(netPL, 2),
                         netPL > 0 ? RATT_BUY : RATT_SELL);
             RemoveTPLine(g_cycles[i].cycleID);
@@ -570,6 +615,10 @@ void CheckSqzExit()
             g_dailyRealizedProfit   += soupPL;
             if(g_cycles[i].profit > 0) { g_sessionWins++; g_dailyWins++; }
             else                       { g_sessionLosses++; g_dailyLosses++; }
+            Alert(StringFormat("Rattapignola SQZ EXIT #%d %s | P&L=%.2f | %s",
+                  g_cycles[i].cycleID,
+                  g_cycles[i].direction > 0 ? "BUY" : "SELL",
+                  g_cycles[i].profit, _Symbol));
             AddFeedItem("SQZ exit " + DoubleToString(soupPL, 2), RATT_AMBER);
             RemoveTPLine(g_cycles[i].cycleID);
          }

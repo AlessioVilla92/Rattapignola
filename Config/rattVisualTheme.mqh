@@ -181,10 +181,23 @@ void ApplyChartTheme()
    ChartSetInteger(0, CHART_COLOR_BACKGROUND,   RATT_BG_DEEP);
    ChartSetInteger(0, CHART_COLOR_FOREGROUND,   RATT_TEXT_HI);
    ChartSetInteger(0, CHART_COLOR_GRID,         C'20,30,20');
-   ChartSetInteger(0, CHART_COLOR_CANDLE_BULL,  RATT_CANDLE_BULL);
-   ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR,  RATT_CANDLE_BEAR);
-   ChartSetInteger(0, CHART_COLOR_CHART_UP,     RATT_CANDLE_BULL);
-   ChartSetInteger(0, CHART_COLOR_CHART_DOWN,   RATT_CANDLE_BEAR);
+
+   if(ColorCandlesByTrend)
+   {
+      // Hide entire native candle (body fill + wick/outline)
+      // OBJ_RECTANGLE overlay (HIGH→LOW, BACK=false) provides full trend colors
+      ChartSetInteger(0, CHART_COLOR_CANDLE_BULL,  RATT_BG_DEEP);
+      ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR,  RATT_BG_DEEP);
+      ChartSetInteger(0, CHART_COLOR_CHART_UP,     RATT_BG_DEEP);
+      ChartSetInteger(0, CHART_COLOR_CHART_DOWN,   RATT_BG_DEEP);
+   }
+   else
+   {
+      ChartSetInteger(0, CHART_COLOR_CANDLE_BULL,  RATT_CANDLE_BULL);
+      ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR,  RATT_CANDLE_BEAR);
+      ChartSetInteger(0, CHART_COLOR_CHART_UP,     RATT_CANDLE_BULL);
+      ChartSetInteger(0, CHART_COLOR_CHART_DOWN,   RATT_CANDLE_BEAR);
+   }
    ChartSetInteger(0, CHART_COLOR_ASK,          RATT_BUY);
    ChartSetInteger(0, CHART_COLOR_BID,          RATT_SELL);
    ChartSetInteger(0, CHART_SHOW_GRID,          false);

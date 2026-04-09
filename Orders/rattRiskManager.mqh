@@ -145,7 +145,12 @@ bool HasSufficientMargin()
    double freeMargin = GetFreeMargin();
    double marginLevel = GetMarginLevel();
 
-   // Dynamic: min 1% of equity, at least $50
+   // Dynamic minimum free margin prima di aprire nuovi trade:
+   //   $50 floor: soglia assoluta per micro-account (evita trade con margine
+   //              insufficiente anche su conti molto piccoli)
+   //   1% equity: soglia proporzionale per conti grandi (su $50K = $500 min,
+   //              previene overexposure progressiva)
+   //   MathMax: il piu' restrittivo dei due prevale
    double minMargin = MathMax(50.0, GetEquity() * 0.01);
 
    if(freeMargin < minMargin)

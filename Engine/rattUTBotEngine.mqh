@@ -388,6 +388,12 @@ double UTBCalcJMA(const double &close[], int count)
       i = keep;
    }
 
+   // sumLen = 10: finestra sliding per la volatilita' istantanea (Jurik standard).
+   //   Misura l'escursione del prezzo oltre le bande su 10 barre recenti.
+   //   Piu' corta = reattiva, piu' lunga = smooth. 10 e' il default Jurik.
+   // avgLen = 65: finestra per normalizzare la volatilita' cumulata (vSum).
+   //   Converte vSum in relative volatility [0..1] confrontando con la media
+   //   su 65 barre. Valore standard Jurik per stabilita' dell'alpha dinamico.
    int sumLen = 10;
    int avgLen = 65;
 

@@ -58,6 +58,7 @@
 //| VARIABILI GLOBALI OVERLAY                                        |
 //+------------------------------------------------------------------+
 int     g_ovlLastDepth   = 0;     // Profondita' effettiva dell'ultimo disegno (per cleanup segmenti)
+int     g_tcolLastDepth  = 0;     // Profondita' effettiva delle candele trend (per cleanup)
 
 //+------------------------------------------------------------------+
 //| IsNewBarOverlay — Rileva nuova barra per l'overlay               |
@@ -96,13 +97,19 @@ bool IsNewBarOverlay()
 
 void DrawChannelOverlay()
 {
-   if(!ShowChannelOverlay) return;
+   if(!ShowChannelOverlay && !ColorCandlesByTrend) return;
 
    // Parametri: depth = quante barre disegnare, atrPeriod per lookback
    int depth = MathMax(1, OverlayDepth);
    int totalBars = iBars(_Symbol, PERIOD_CURRENT);
    int atrPeriod = (g_utb_atrPeriod > 0) ? g_utb_atrPeriod : 14;
    int lookback = MathMax(atrPeriod, 50) + 5;
+
+   // Extra lookback per sorgente adattiva (come ScanHistoricalSignals)
+   if(InpSrcType == UTB_SRC_HMA)
+      lookback += g_utb_hmaPeriod * 2 + 10;
+   else if(InpSrcType == UTB_SRC_KAMA)
+      lookback += g_utb_kamaN + 5;
 
    // Serve almeno lookback barre per calcolare il trailing stop
    if(totalBars < lookback + 5)
@@ -124,25 +131,73 @@ void DrawChannelOverlay()
    }
    g_ovlLastDepth = depth;
 
+   // Pulizia candele trend orfane
+   if(g_tcolLastDepth > depth)
+   {
+      for(int i = depth + 1; i < g_tcolLastDepth; i++)
+         ObjectDelete(0, "RATT_TCOL_" + IntegerToString(i));
+   }
+   g_tcolLastDepth = depth + 1;
+
+   int bufSize = depth + lookback;
+
    // Carica ATR buffer
    double atrBuf[];
    ArraySetAsSeries(atrBuf, true);
-   int atrCopied = CopyBuffer(g_utb_atrHandle, 0, 0, depth + lookback, atrBuf);
-   if(atrCopied < depth + lookback)
+   int atrCopied = CopyBuffer(g_utb_atrHandle, 0, 0, bufSize, atrBuf);
+   if(atrCopied < bufSize)
    {
-      AdLogW(LOG_CAT_UI, StringFormat("DrawChannelOverlay: ATR copy failed (%d < %d)", atrCopied, depth + lookback));
+      AdLogW(LOG_CAT_UI, StringFormat("DrawChannelOverlay: ATR copy failed (%d < %d)", atrCopied, bufSize));
       return;
    }
 
    // Carica Close buffer
    double closeBuf[];
    ArraySetAsSeries(closeBuf, true);
-   int closeCopied = CopyClose(_Symbol, PERIOD_CURRENT, 0, depth + lookback, closeBuf);
-   if(closeCopied < depth + lookback)
+   int closeCopied = CopyClose(_Symbol, PERIOD_CURRENT, 0, bufSize, closeBuf);
+   if(closeCopied < bufSize)
    {
-      AdLogW(LOG_CAT_UI, StringFormat("DrawChannelOverlay: Close copy failed (%d < %d)", closeCopied, depth + lookback));
+      AdLogW(LOG_CAT_UI, StringFormat("DrawChannelOverlay: Close copy failed (%d < %d)", closeCopied, bufSize));
       return;
    }
+
+   // ================================================================
+   // JMA: Save global state before scan (avoid corruption)
+   // ================================================================
+   bool   save_jma_init    = false;
+   int    save_jma_histLen = 0;
+   double save_jma_e0 = 0, save_jma_e1 = 0, save_jma_e2 = 0, save_jma_prev = 0;
+   double save_uBand[], save_lBand[], save_volty[], save_vSum[];
+   double save_e0_arr[], save_det0[], save_det1[], save_src_arr[];
+
+   if(InpSrcType == UTB_SRC_JMA)
+   {
+      save_jma_init    = g_utb_jma_init;
+      save_jma_histLen = g_utb_jma_histLen;
+      save_jma_e0      = g_utb_jma_e0;
+      save_jma_e1      = g_utb_jma_e1;
+      save_jma_e2      = g_utb_jma_e2;
+      save_jma_prev    = g_utb_jma_prev;
+
+      ArrayCopy(save_uBand,   g_utb_jma_uBand);
+      ArrayCopy(save_lBand,   g_utb_jma_lBand);
+      ArrayCopy(save_volty,   g_utb_jma_volty);
+      ArrayCopy(save_vSum,    g_utb_jma_vSum);
+      ArrayCopy(save_e0_arr,  g_utb_jma_e0_arr);
+      ArrayCopy(save_det0,    g_utb_jma_det0);
+      ArrayCopy(save_det1,    g_utb_jma_det1);
+      ArrayCopy(save_src_arr, g_utb_jma_src_arr);
+
+      UTBResetJMAState();
+   }
+
+   // ================================================================
+   // KAMA: stato locale (non tocca globali engine)
+   // ================================================================
+   double kama_prev = 0;
+   bool   kama_init = false;
+   double kama_fc = 2.0 / (g_utb_kamaFast + 1.0);
+   double kama_sc = 2.0 / (g_utb_kamaSlow + 1.0);
 
    // Array temporanei: Trail, Source, Time per ogni barra visibile
    double arrTrail[], arrSrc[];
@@ -154,24 +209,98 @@ void DrawChannelOverlay()
    ArrayInitialize(arrSrc, 0);
 
    // STEP 1: Calcola trailing stop per tutte le barre (oldest to newest)
-   // Dobbiamo scorrere dall'oldest al newest per mantenere lo stato del trail
+   // Usa la SORGENTE ADATTIVA (Close/KAMA/HMA/JMA) identica all'engine
    double trail = 0;
    double src = 0, src_prev = 0;
 
-   // Prima calcolare il trail per le barre di warmup (non visualizzate)
-   for(int i = depth + lookback - 2; i >= 0; i--)
+   for(int i = bufSize - 2; i >= 0; i--)
    {
       double atr = atrBuf[i];
       if(atr <= 0) continue;
       double nLoss = g_utb_keyValue * atr;
 
+      // ===== Sorgente adattiva — identica all'engine =====
+      double curSrc = closeBuf[i];
+
+      switch(InpSrcType)
+      {
+         case UTB_SRC_CLOSE:
+            curSrc = closeBuf[i];
+            break;
+
+         case UTB_SRC_KAMA:
+         {
+            if(!kama_init)
+            {
+               kama_prev = closeBuf[i];
+               kama_init = true;
+               curSrc = closeBuf[i];
+            }
+            else if((i + g_utb_kamaN) < bufSize)
+            {
+               double direction = MathAbs(closeBuf[i] - closeBuf[i + g_utb_kamaN]);
+               double noise = 0;
+               for(int k = 0; k < g_utb_kamaN; k++)
+                  noise += MathAbs(closeBuf[i + k] - closeBuf[i + k + 1]);
+               double er_k = (noise > 0) ? direction / noise : 0;
+               double smooth = MathPow(er_k * (kama_fc - kama_sc) + kama_sc, 2.0);
+               curSrc = kama_prev + smooth * (closeBuf[i] - kama_prev);
+               kama_prev = curSrc;
+            }
+            else
+            {
+               curSrc = kama_prev;
+            }
+            break;
+         }
+
+         case UTB_SRC_HMA:
+         {
+            int period = g_utb_hmaPeriod;
+            int half = MathMax(period / 2, 2);
+            int sqn  = (int)MathRound(MathSqrt((double)period));
+            int needed = i + period + sqn;
+
+            if(needed < bufSize)
+            {
+               double tmp[];
+               ArrayResize(tmp, sqn);
+               for(int k = 0; k < sqn; k++)
+               {
+                  int barIdx = i + k;
+                  double wmaHalf = WMAOnArray(closeBuf, barIdx, half, bufSize);
+                  double wmaFull = WMAOnArray(closeBuf, barIdx, period, bufSize);
+                  tmp[k] = 2.0 * wmaHalf - wmaFull;
+               }
+               double num = 0, den = 0;
+               for(int k = 0; k < sqn; k++)
+               {
+                  double w = (double)(sqn - k);
+                  num += w * tmp[k];
+                  den += w;
+               }
+               curSrc = (den > 0) ? num / den : closeBuf[i];
+            }
+            break;
+         }
+
+         case UTB_SRC_JMA:
+         {
+            double jmaClose[3];
+            jmaClose[0] = closeBuf[i];
+            jmaClose[1] = closeBuf[i];
+            jmaClose[2] = closeBuf[i];
+            curSrc = UTBCalcJMA(jmaClose, 3);
+            break;
+         }
+      }
+
       src_prev = src;
-      src = closeBuf[i];
+      src = curSrc;
 
       if(trail == 0)
       {
          trail = src - nLoss;
-         // Salva nei array se dentro il range visualizzabile
          if(i <= depth)
          {
             arrTrail[i] = trail;
@@ -191,7 +320,6 @@ void DrawChannelOverlay()
       else
          trail = src + nLoss;
 
-      // Salva nei array se dentro il range visualizzabile
       if(i <= depth)
       {
          arrTrail[i] = trail;
@@ -200,23 +328,105 @@ void DrawChannelOverlay()
       }
    }
 
-   // STEP 2: Disegna segmenti OBJ_TREND tra barre adiacenti
-   for(int i = 0; i < depth; i++)
+   // ================================================================
+   // JMA: Restore global state after scan
+   // ================================================================
+   if(InpSrcType == UTB_SRC_JMA)
    {
-      // Salta barre con dati invalidi
-      if(arrTrail[i] <= 0 || arrTrail[i + 1] <= 0) continue;
-      if(arrSrc[i] <= 0 || arrSrc[i + 1] <= 0) continue;
+      g_utb_jma_init    = save_jma_init;
+      g_utb_jma_histLen = save_jma_histLen;
+      g_utb_jma_e0      = save_jma_e0;
+      g_utb_jma_e1      = save_jma_e1;
+      g_utb_jma_e2      = save_jma_e2;
+      g_utb_jma_prev    = save_jma_prev;
 
-      datetime t1 = arrT[i];      // Tempo barra piu' recente (punto destro)
-      datetime t2 = arrT[i + 1];  // Tempo barra piu' vecchia (punto sinistro)
+      ArrayCopy(g_utb_jma_uBand,   save_uBand);
+      ArrayCopy(g_utb_jma_lBand,   save_lBand);
+      ArrayCopy(g_utb_jma_volty,   save_volty);
+      ArrayCopy(g_utb_jma_vSum,    save_vSum);
+      ArrayCopy(g_utb_jma_e0_arr,  save_e0_arr);
+      ArrayCopy(g_utb_jma_det0,    save_det0);
+      ArrayCopy(g_utb_jma_det1,    save_det1);
+      ArrayCopy(g_utb_jma_src_arr, save_src_arr);
+   }
 
-      string prefix = "RATT_OVL_" + IntegerToString(i) + "_";
+   // STEP 2: Candele colorate per trend (UTBotAdaptive style)
+   // Disegnate PRIMA dei trail → i trail (creati dopo) renderizzano sopra
+   if(ColorCandlesByTrend)
+   {
+      double highBuf[], lowBuf[];
+      ArraySetAsSeries(highBuf, true);
+      ArraySetAsSeries(lowBuf, true);
+      CopyHigh(_Symbol, PERIOD_CURRENT, 0, depth + 1, highBuf);
+      CopyLow(_Symbol, PERIOD_CURRENT, 0, depth + 1, lowBuf);
 
-      // Trail stop — colore dinamico: bull se source sopra trail, bear se sotto
-      bool isBull = (arrSrc[i] > arrTrail[i]);
-      color trailClr = isBull ? RATT_CHAN_TRAIL_BULL : RATT_CHAN_TRAIL_BEAR;
-      DrawOverlayLineDynColor(prefix + "T", t2, arrTrail[i + 1], t1, arrTrail[i],
-                              trailClr, RATT_CHAN_STYLE, RATT_CHAN_WIDTH);
+      int perSec = PeriodSeconds();
+
+      for(int i = 0; i <= depth; i++)
+      {
+         if(arrTrail[i] <= 0 || arrSrc[i] <= 0) continue;
+
+         // Trend color: src > trail → teal, src <= trail → coral
+         color trendClr = (arrSrc[i] > arrTrail[i]) ? RATT_CHAN_TRAIL_BULL : RATT_CHAN_TRAIL_BEAR;
+
+         double candleHigh = highBuf[i];
+         double candleLow  = lowBuf[i];
+
+         // Flat bar: ensure minimum visible size
+         if(MathAbs(candleHigh - candleLow) < _Point)
+         {
+            candleHigh += _Point;
+            candleLow  -= _Point;
+         }
+
+         datetime t1 = arrT[i];
+         datetime t2 = t1 + perSec;
+
+         string name = "RATT_TCOL_" + IntegerToString(i);
+
+         if(ObjectFind(0, name) < 0)
+         {
+            ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, candleHigh, t2, candleLow);
+            ObjectSetInteger(0, name, OBJPROP_FILL, true);
+            ObjectSetInteger(0, name, OBJPROP_BACK, false);
+            ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+         }
+         else
+         {
+            ObjectSetInteger(0, name, OBJPROP_TIME, 0, t1);
+            ObjectSetDouble(0, name, OBJPROP_PRICE, 0, candleHigh);
+            ObjectSetInteger(0, name, OBJPROP_TIME, 1, t2);
+            ObjectSetDouble(0, name, OBJPROP_PRICE, 1, candleLow);
+         }
+         ObjectSetInteger(0, name, OBJPROP_COLOR, trendClr);
+      }
+   }
+
+   // STEP 3: Disegna segmenti trail (OBJ_TREND)
+   // Creati DOPO i rettangoli → renderizzano sopra (foreground, creation order)
+   if(ShowChannelOverlay)
+   {
+      for(int i = 0; i < depth; i++)
+      {
+         if(arrTrail[i] <= 0 || arrTrail[i + 1] <= 0) continue;
+         if(arrSrc[i] <= 0 || arrSrc[i + 1] <= 0) continue;
+
+         datetime t1 = arrT[i];
+         datetime t2 = arrT[i + 1];
+
+         string prefix = "RATT_OVL_" + IntegerToString(i) + "_";
+
+         bool isBull = (arrSrc[i] > arrTrail[i]);
+         color trailClr = isBull ? RATT_CHAN_TRAIL_BULL : RATT_CHAN_TRAIL_BEAR;
+         DrawOverlayLineDynColor(prefix + "T", t2, arrTrail[i + 1], t1, arrTrail[i],
+                                 trailClr, RATT_CHAN_STYLE, RATT_CHAN_WIDTH);
+
+         // When trend rectangles are foreground (BACK=false), trail must also be
+         // foreground so it renders on top of filled rectangles
+         if(ColorCandlesByTrend)
+            ObjectSetInteger(0, prefix + "T", OBJPROP_BACK, false);
+      }
    }
 }
 
@@ -230,15 +440,13 @@ void DrawChannelOverlay()
 //+------------------------------------------------------------------+
 void UpdateChannelLiveEdge()
 {
-   if(!ShowChannelOverlay) return;
+   if(!ShowChannelOverlay && !ColorCandlesByTrend) return;
    if(OverlayDepth <= 0) return;
 
    int atrPeriod = (g_utb_atrPeriod > 0) ? g_utb_atrPeriod : 14;
    int totalBars = iBars(_Symbol, PERIOD_CURRENT);
    if(totalBars < atrPeriod + 5) return;
 
-   // Calcola trail corrente per bar[0]
-   // Usa i valori live dall'engine se disponibili
    double atrBuf[];
    ArraySetAsSeries(atrBuf, true);
    if(CopyBuffer(g_utb_atrHandle, 0, 0, 3, atrBuf) < 3) return;
@@ -247,21 +455,23 @@ void UpdateChannelLiveEdge()
    ArraySetAsSeries(closeBuf, true);
    if(CopyClose(_Symbol, PERIOD_CURRENT, 0, 3, closeBuf) < 3) return;
 
+   // Bar[0]: close live (approssimazione — engine non ha ancora calcolato)
+   // Bar[1]: sorgente adattiva confermata dall'engine
    double src0 = closeBuf[0];
+   double src1 = (g_utb_lastSrc > 0) ? g_utb_lastSrc : closeBuf[1];
    datetime t0 = iTime(_Symbol, PERIOD_CURRENT, 0);
-   string prefix = "RATT_OVL_0_";
 
    // Aggiorna trail stop — solo il punto 1 (bar[0], estremo destro)
-   string nameT = prefix + "T";
-   if(ObjectFind(0, nameT) >= 0)
+   string nameT = "RATT_OVL_0_T";
+   bool isBull = false;
+
+   if(ShowChannelOverlay && ObjectFind(0, nameT) >= 0)
    {
-      // Leggi il trail precedente dal punto 0 (bar[1]) dell'oggetto
       double trail1 = ObjectGetDouble(0, nameT, OBJPROP_PRICE, 0);
       if(trail1 > 0)
       {
          double atr0 = atrBuf[0];
          double nLoss = g_utb_keyValue * atr0;
-         double src1 = closeBuf[1];
          double trail0;
 
          if(src0 > trail1 && src1 > trail1)
@@ -276,13 +486,53 @@ void UpdateChannelLiveEdge()
          ObjectSetInteger(0, nameT, OBJPROP_TIME, 1, t0);
          ObjectSetDouble(0, nameT, OBJPROP_PRICE, 1, trail0);
 
-         // Colore dinamico: bull se source sopra trail
-         bool isBull = (src0 > trail0);
+         isBull = (src0 > trail0);
          color trailClr = isBull ? RATT_CHAN_TRAIL_BULL : RATT_CHAN_TRAIL_BEAR;
          ObjectSetInteger(0, nameT, OBJPROP_COLOR, trailClr);
+
+         // Trail foreground when trend rects are foreground (correct layering)
+         if(ColorCandlesByTrend)
+            ObjectSetInteger(0, nameT, OBJPROP_BACK, false);
       }
    }
 
+   // Live trend candle color per bar[0]
+   if(ColorCandlesByTrend)
+   {
+      if(!ShowChannelOverlay)
+      {
+         // Fallback: usa l'engine g_utb_lastTrail dal tick precedente
+         isBull = (src0 > g_utb_lastTrail);
+      }
+
+      double high0 = iHigh(_Symbol, PERIOD_CURRENT, 0);
+      double low0  = iLow(_Symbol, PERIOD_CURRENT, 0);
+      if(MathAbs(high0 - low0) < _Point)
+      {
+         high0 += _Point;
+         low0  -= _Point;
+      }
+
+      color trendClr = isBull ? RATT_CHAN_TRAIL_BULL : RATT_CHAN_TRAIL_BEAR;
+      string nameTC = "RATT_TCOL_0";
+      datetime t2 = t0 + PeriodSeconds();
+
+      if(ObjectFind(0, nameTC) < 0)
+      {
+         ObjectCreate(0, nameTC, OBJ_RECTANGLE, 0, t0, high0, t2, low0);
+         ObjectSetInteger(0, nameTC, OBJPROP_FILL, true);
+         ObjectSetInteger(0, nameTC, OBJPROP_BACK, false);
+         ObjectSetInteger(0, nameTC, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, nameTC, OBJPROP_HIDDEN, true);
+      }
+      else
+      {
+         ObjectSetDouble(0, nameTC, OBJPROP_PRICE, 0, high0);
+         ObjectSetDouble(0, nameTC, OBJPROP_PRICE, 1, low0);
+         ObjectSetInteger(0, nameTC, OBJPROP_TIME, 1, t2);
+      }
+      ObjectSetInteger(0, nameTC, OBJPROP_COLOR, trendClr);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -412,5 +662,7 @@ void CleanupOverlay()
    ObjectsDeleteAll(0, "RATT_OVL_");     // Segmenti trail
    ObjectsDeleteAll(0, "RATT_TP_");      // Linee e dot TP
    ObjectsDeleteAll(0, "RATT_TRIG_VL_"); // VLine trigger
-   g_ovlLastDepth = 0;                 // Reset contatore profondita'
+   ObjectsDeleteAll(0, "RATT_TCOL_");    // Candele colorate per trend
+   g_ovlLastDepth  = 0;
+   g_tcolLastDepth = 0;
 }

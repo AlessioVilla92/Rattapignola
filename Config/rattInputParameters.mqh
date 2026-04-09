@@ -75,7 +75,7 @@ input group "╚═════════════════════�
 input group "    🎯 ENTRY MODE"
 input ENUM_ENTRY_MODE  EntryMode            = ENTRY_STOP;    // 📋 Entry Mode (MARKET/LIMIT/STOP) ▼
 input double           LimitOffsetPips      = 2.0;           // 📏 Limit Offset (pip, se LIMIT mode)
-input double           StopOffsetPips       = 2.5;           // 📏 Stop Offset from trigger (pip, se STOP mode)
+input double           StopOffsetPips       = 1.0;           // 📏 Stop Offset from trigger (pip, se STOP mode)
 input int              PendingExpiryBars    = 8;             // ⏱️ Expiry Pending (barre, 0=mai)
 
 // [MOD] Rimosso gruppo "STOP LOSS" con i parametri SLMode (ENUM_SL_MODE) e SLValue (double).
@@ -133,6 +133,7 @@ input bool           ShowChannelOverlay     = true;          // ✅ Show Channel
 input bool           ShowSignalArrows       = true;          // ✅ Show Signal Arrows
 input bool           ShowTPTargetLines      = true;          // ✅ Show TP Target Lines
 input int            OverlayDepth           = 500;           // 📊 Channel Overlay Depth (bars, 0=arrows only)
+input bool           ColorCandlesByTrend    = true;          // 🎨 Color Candles by Trend (UTBotAdaptive style)
 
 //+------------------------------------------------------------------+
 //| 7. ADVANCED                                                      |

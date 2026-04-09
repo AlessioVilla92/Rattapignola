@@ -3,7 +3,7 @@
 //|  "Il canto della campagna nelle notti d'estate."                  |
 //+------------------------------------------------------------------+
 //|  Copyright (C) 2026 - Rattapignola Development                   |
-//|  Version: 1.0.0                                                   |
+//|  Version: 1.2.0                                                   |
 //|  Engine: UTBot Adaptive — swappable                               |
 //+------------------------------------------------------------------+
 //|                                                                  |
@@ -44,8 +44,8 @@
 //|                                                                  |
 //+------------------------------------------------------------------+
 #property copyright "Rattapignola (C) 2026"
-#property version   "1.00"
-#property description "Rattapignola EA v1.0.0 — Reusable Trading Framework"
+#property version   "1.20"
+#property description "Rattapignola EA v1.2.0 — Reusable Trading Framework"
 #property description "Engine: UTBot Adaptive (Trailing Stop ATR Adattivo)"
 #property description "Segnali: UTBot Crossover (TBS forte 2x / TWS debole 1x)"
 #property description "TP: Signal-to-Signal (flip strategy)"
@@ -232,6 +232,11 @@ int OnInit()
 
    AdLogI(LOG_CAT_INIT, StringFormat("RATTAPIGNOLA ready — %s",
           g_recoveryPerformed ? "RECOVERED" : "IDLE (press START)"));
+
+   Alert(StringFormat("Rattapignola AVVIATO | %s %s | Magic=%d | %s",
+         _Symbol, EnumToString(Period()), MagicNumber,
+         g_recoveryPerformed ? "RECOVERED" : "Premi START per attivare"));
+
    return INIT_SUCCEEDED;
 }
 
@@ -269,6 +274,13 @@ void OnDeinit(const int reason)
 
    EventKillTimer();
    AdLogI(LOG_CAT_SYSTEM, StringFormat("DEINIT — Reason: %d", reason));
+
+   if(reason == REASON_REMOVE)
+      Alert(StringFormat("Rattapignola RIMOSSO | %s %s", _Symbol, EnumToString(Period())));
+   else if(reason == REASON_CHARTCHANGE)
+      Alert(StringFormat("Rattapignola TF CAMBIATO | %s %s", _Symbol, EnumToString(Period())));
+   else
+      Alert(StringFormat("Rattapignola FERMATO | %s %s | Reason=%d", _Symbol, EnumToString(Period()), reason));
 }
 
 //+------------------------------------------------------------------+
@@ -277,6 +289,9 @@ void OnDeinit(const int reason)
 void OnTick()
 {
    // ── 1. DASHBOARD UPDATE (throttle 500ms) ─────────────────────────
+   // 500ms: bilancia reattivita' visuale (aggiornamento percepito fluido)
+   // vs CPU (evita ridisegno dashboard + live edge ad ogni tick, che su
+   // mercati veloci puo' generare 20-50 tick/sec → overhead inutile)
    static uint lastDashUpdate = 0;
    uint now = GetTickCount();
    if(now - lastDashUpdate > 500)
@@ -308,7 +323,9 @@ void OnTick()
    // ── 4. SESSION FILTER ────────────────────────────────────────────
    if(EnableSessionFilter && !IsWithinSession())
    {
-      // DIAG: log periodico quando sessione blocca (max 1 ogni 5 min)
+      // DIAG: log periodico quando sessione blocca (max 1 ogni 5 min = 300s)
+      // Throttle 300s: evita spam nel journal (sessione fuori orario puo'
+      // durare ore, senza throttle loggerebbe ad ogni tick per tutta la durata)
       static datetime lastSessBlockLog = 0;
       datetime nowDT = TimeCurrent();
       if(nowDT - lastSessBlockLog > 300)
@@ -350,7 +367,11 @@ void OnTick()
       bool passChecks = true;
 
       if(!PerformRiskChecks())
+      {
          passChecks = false;
+         Alert(StringFormat("Rattapignola BLOCCATO: Risk check fallito per %s | %s",
+               sig.direction > 0 ? "BUY" : "SELL", _Symbol));
+      }
 
       // HTF filter
       if(UseHTFFilter && !HTFCheckSignal(sig.direction))
@@ -358,6 +379,8 @@ void OnTick()
          AdLogI(LOG_CAT_HTF, StringFormat("HTF filter blocked %s",
                 sig.direction > 0 ? "BUY" : "SELL"));
          passChecks = false;
+         Alert(StringFormat("Rattapignola BLOCCATO: HTF filter ha bloccato %s | %s",
+               sig.direction > 0 ? "BUY" : "SELL", _Symbol));
       }
 
       if(passChecks)

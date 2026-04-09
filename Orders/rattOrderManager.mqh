@@ -106,6 +106,10 @@ ulong OrderPlaceMarket(int direction, double lots, double sl, double tp, string 
       uint errorCode = g_trade.ResultRetcode();
       string errorDesc = g_trade.ResultRetcodeDescription();
 
+      // Error codes non recuperabili — ritentare non serve:
+      //   10033 (TRADE_RETCODE_PRICE_CHANGED): prezzo Ask cambiato durante invio
+      //   10034 (TRADE_RETCODE_PRICE_OFF):     prezzo Bid cambiato, off-quote
+      //   10040 (TRADE_RETCODE_REJECT):        ordine rifiutato dal server (regole broker)
       if(errorCode == 10033 || errorCode == 10034 || errorCode == 10040)
       {
          AdLogW(LOG_CAT_ORDER, StringFormat("DIAG BROKER REJECT (no retry): %s (code %d)", errorDesc, errorCode));
@@ -119,6 +123,7 @@ ulong OrderPlaceMarket(int direction, double lots, double sl, double tp, string 
    }
 
    AdLogE(LOG_CAT_ORDER, StringFormat("DIAG: Market %s FALLITO dopo %d tentativi", dirStr, MaxRetries));
+   Alert(StringFormat("Rattapignola ERRORE: Market %s fallito dopo %d tentativi | %s", dirStr, MaxRetries, _Symbol));
    return 0;
 }
 
@@ -153,6 +158,7 @@ ulong OrderPlacePending(ENUM_ORDER_TYPE orderType, double lots, double price,
    if(currentOrders >= brokerLimit - 2)
    {
       AdLogW(LOG_CAT_ORDER, StringFormat("DIAG BLOCCATO: Limite ordini broker raggiunto: %d/%d — ordine NON inviato", currentOrders, brokerLimit));
+      Alert(StringFormat("Rattapignola ERRORE: Limite ordini broker %d/%d | %s", currentOrders, brokerLimit, _Symbol));
       return 0;
    }
 
@@ -163,6 +169,8 @@ ulong OrderPlacePending(ENUM_ORDER_TYPE orderType, double lots, double price,
       double checkBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       AdLogW(LOG_CAT_ORDER, StringFormat("DIAG BLOCCATO: Prezzo non valido per %s @ %s | Bid=%s | Ask=%s — ordine NON inviato",
              GetOrderTypeString(orderType), FormatPrice(price), FormatPrice(checkBid), FormatPrice(checkAsk)));
+      Alert(StringFormat("Rattapignola ERRORE: Prezzo non valido %s @ %s | %s",
+            GetOrderTypeString(orderType), FormatPrice(price), _Symbol));
       return 0;
    }
    AdLogD(LOG_CAT_ORDER, "DIAG: Prezzo valido per pending — invio al broker...");
@@ -209,6 +217,7 @@ ulong OrderPlacePending(ENUM_ORDER_TYPE orderType, double lots, double price,
       uint errorCode = g_trade.ResultRetcode();
       string errorDesc = g_trade.ResultRetcodeDescription();
 
+      // Error codes non recuperabili (stessi del Market — vedi OrderPlaceMarket)
       if(errorCode == 10033 || errorCode == 10034 || errorCode == 10040)
       {
          AdLogW(LOG_CAT_ORDER, StringFormat("DIAG BROKER REJECT (no retry): %s (code %d)", errorDesc, errorCode));
@@ -222,6 +231,8 @@ ulong OrderPlacePending(ENUM_ORDER_TYPE orderType, double lots, double price,
    }
 
    AdLogE(LOG_CAT_ORDER, StringFormat("DIAG: Ordine pending FALLITO dopo %d tentativi — NESSUN ordine piazzato", MaxRetries));
+   Alert(StringFormat("Rattapignola ERRORE: Pending %s fallito dopo %d tentativi | %s",
+         GetOrderTypeString(orderType), MaxRetries, _Symbol));
    return 0;
 }
 
@@ -403,6 +414,8 @@ bool ClosePosition(ulong ticket)
    }
 
    AdLogE(LOG_CAT_ORDER, StringFormat("Failed to close position #%d", ticket));
+   Alert(StringFormat("Rattapignola ERRORE: Chiusura posizione #%d FALLITA dopo %d tentativi | %s",
+         ticket, MaxRetries, _Symbol));
    return false;
 }
 
@@ -421,6 +434,8 @@ int CloseAllPositions()
       if(posMagic != MagicNumber && posMagic != MagicNumber + 1) continue;
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
 
+      string posType = (posMagic == MagicNumber) ? "SOUP" : "HS";
+      AdLogI(LOG_CAT_ORDER, StringFormat("CloseAll: closing %s #%d (magic=%d)", posType, ticket, posMagic));
       g_trade.SetExpertMagicNumber((int)posMagic);
       if(ClosePosition(ticket)) closed++;
    }
@@ -443,6 +458,8 @@ int DeleteAllPendingOrders()
       if(ordMagic != MagicNumber && ordMagic != MagicNumber + 1) continue;
       if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
 
+      string ordType = (ordMagic == MagicNumber) ? "SOUP" : "HS";
+      AdLogI(LOG_CAT_ORDER, StringFormat("DeleteAll: deleting %s pending #%d (magic=%d)", ordType, ticket, ordMagic));
       g_trade.SetExpertMagicNumber((int)ordMagic);
       if(DeletePendingOrder(ticket)) deleted++;
    }

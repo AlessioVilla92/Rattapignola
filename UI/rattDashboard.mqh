@@ -185,10 +185,10 @@ void DrawEnginePanel(int x, int y, int w)
       int lh = 16;
       int valX = x + pad + 90;
 
-      // Trail Stop
+      // Trail Stop (bandLevel = trail effettivo; upperBand = src + nLoss = banda superiore)
       DashLabel("ENG_L1", x + pad, ly, "Trail Stop", RATT_TEXT_MID, 8);
       DashLabel("ENG_V1", valX, ly,
-                DoubleToString(g_lastSignal.upperBand, _Digits), RATT_SELL, 8);
+                DoubleToString(g_lastSignal.bandLevel, _Digits), RATT_SELL, 8);
       ly += lh;
 
       // Source
@@ -227,8 +227,17 @@ void DrawEnginePanel(int x, int y, int w)
       ly += lh;
 
       // Config
+      // Sorgente adattiva dinamica (non hardcoded JMA)
+      string srcName = "Close";
+      switch(InpSrcType)
+      {
+         case UTB_SRC_JMA:   srcName = "JMA";   break;
+         case UTB_SRC_KAMA:  srcName = "KAMA";  break;
+         case UTB_SRC_HMA:   srcName = "HMA";   break;
+         case UTB_SRC_CLOSE: srcName = "Close"; break;
+      }
       DashLabel("ENG_CFG", x + pad, ly,
-                StringFormat("Key:%.1f | ATR:%d | Src:JMA", g_utb_keyValue, g_utb_atrPeriod),
+                StringFormat("Key:%.1f | ATR:%d | Src:%s", g_utb_keyValue, g_utb_atrPeriod, srcName),
                 RATT_TEXT_MUTED, 7);
    }
    else
@@ -314,8 +323,8 @@ void DrawSystemStatus(int x, int y, int w)
              marginLvl > 500 ? RATT_BUY : (marginLvl > 200 ? RATT_AMBER : RATT_SELL), 8);
    ly += lh;
 
-   // ATR
-   DashLabel("SY_L8", x + pad, ly, "ATR(14)", RATT_TEXT_MID, 8);
+   // ATR (periodo dinamico da preset TF)
+   DashLabel("SY_L8", x + pad, ly, StringFormat("ATR(%d)", g_utb_atrPeriod), RATT_TEXT_MID, 8);
    DashLabel("SY_V8", valX, ly,
              StringFormat("%.1f pip", g_atrCache.valuePips), RATT_FIREFLY, 8);
 }
@@ -618,10 +627,10 @@ void UpdateSidePanel()
    DashLabel("SM_R01V", valX, ly, g_engineReady ? "ACTIVE" : "INIT", g_engineReady ? RATT_BUY : RATT_AMBER, 8, RATT_FONT_SECTION);
    ly += lh;
 
-   // 2. ATR
-   DashLabel("SM_R02L", sx + 10, ly, "ATR(14)", RATT_TEXT_MID, 8);
+   // 2. ATR (periodo dinamico da preset TF)
+   DashLabel("SM_R02L", sx + 10, ly, StringFormat("ATR(%d)", g_utb_atrPeriod), RATT_TEXT_MID, 8);
    DashLabel("SM_R02V", valX, ly,
-             StringFormat("%.1f pip", g_lastSignal.extraValues[0] > 0 ? PointsToPips(g_lastSignal.extraValues[0]) : g_atrCache.valuePips),
+             StringFormat("%.1f pip", g_lastSignal.extraValues[0] > 0 ? g_lastSignal.extraValues[0] : g_atrCache.valuePips),
              RATT_FIREFLY, 8);
    ly += lh;
 
@@ -859,7 +868,7 @@ void CreateDashboard()
              + RATT_H_ENGINE + RATT_GAP + RATT_H_PL + RATT_GAP;
 
    CreateControlButtons(RATT_DASH_X, ctrlY, RATT_DASH_COL_W);
-   AdLogI(LOG_CAT_UI, "Dashboard created (2-column SugaraPivot style v1.1)");
+   AdLogI(LOG_CAT_UI, "Dashboard created (2-column SugaraPivot style v1.2)");
 }
 
 //+------------------------------------------------------------------+

@@ -194,11 +194,14 @@ void CheckDailyReset()
       TimeToStruct(g_dailyCyclesDate, last);
       if(now.day != last.day || now.mon != last.mon)
       {
+         AdLogI(LOG_CAT_SYSTEM, StringFormat(
+            "DAILY RESET | Prev: W=%d L=%d PL=%.2f Cycles=%d | Date: %04d.%02d.%02d -> %04d.%02d.%02d",
+            g_dailyWins, g_dailyLosses, g_dailyRealizedProfit, g_dailyCyclesCount,
+            last.year, last.mon, last.day, now.year, now.mon, now.day));
          g_dailyCyclesCount    = 0;
          g_dailyRealizedProfit = 0;
          g_dailyWins           = 0;
          g_dailyLosses         = 0;
-         Print("[SYSTEM] Daily counters reset (cycles/profit/wins/losses)");
       }
    }
    g_dailyCyclesDate = TimeCurrent();
