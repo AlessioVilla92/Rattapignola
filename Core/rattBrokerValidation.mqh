@@ -63,6 +63,66 @@ bool ValidateInputParameters()
    Log_Header("VALIDATING INPUT PARAMETERS");
    int errors = 0;
 
+   // [MINOR-5] Range checks aggiuntivi: in MQL5 gli input sono read-only
+   // a runtime, quindi non si puo' clampare. Si fallisce con messaggio
+   // chiaro e l'utente corregge dal dialog.
+
+   // TBS/TWS Lot Multipliers: 0.1..10.0
+   if(TBSLotMultiplier < 0.1 || TBSLotMultiplier > 10.0)
+   {
+      Log_SystemError("Validation", 0, StringFormat(
+         "TBSLotMultiplier out of range (current: %.2f, valid: 0.1..10.0)", TBSLotMultiplier));
+      errors++;
+   }
+   if(TWSLotMultiplier < 0.1 || TWSLotMultiplier > 10.0)
+   {
+      Log_SystemError("Validation", 0, StringFormat(
+         "TWSLotMultiplier out of range (current: %.2f, valid: 0.1..10.0)", TWSLotMultiplier));
+      errors++;
+   }
+
+   // RiskCashPerTrade: minimo 1.0 (solo se modalita' FIXED_CASH)
+   if(RiskMode == RISK_FIXED_CASH && RiskCashPerTrade < 1.0)
+   {
+      Log_SystemError("Validation", 0, StringFormat(
+         "RiskCashPerTrade troppo basso (current: %.2f, min: 1.0)", RiskCashPerTrade));
+      errors++;
+   }
+
+   // HsLot: range broker (solo se hedge attivo)
+   if(EnableHedge && HsEnabled)
+   {
+      if(HsLot < g_symbolMinLot)
+      {
+         Log_SystemError("Validation", 0, StringFormat(
+            "HsLot %.4f sotto broker min %.4f", HsLot, g_symbolMinLot));
+         errors++;
+      }
+      if(HsLot > g_symbolMaxLot)
+      {
+         Log_SystemError("Validation", 0, StringFormat(
+            "HsLot %.4f sopra broker max %.4f", HsLot, g_symbolMaxLot));
+         errors++;
+      }
+   }
+
+   // MaxConcurrentTrades: max MAX_CYCLES (il min e' gia' verificato sotto)
+   if(MaxConcurrentTrades > MAX_CYCLES)
+   {
+      Log_SystemError("Validation", 0, StringFormat(
+         "MaxConcurrentTrades %d supera MAX_CYCLES (%d)", MaxConcurrentTrades, MAX_CYCLES));
+      errors++;
+   }
+
+   // MaxSpreadPips: deve essere > 0 per avere effetto
+   if(MaxSpreadPips <= 0)
+   {
+      Log_SystemError("Validation", 0, StringFormat(
+         "MaxSpreadPips deve essere > 0 (current: %.2f)", MaxSpreadPips));
+      errors++;
+   }
+
+
    // Lot size (for FIXED_LOT mode)
    if(RiskMode == RISK_FIXED_LOT)
    {

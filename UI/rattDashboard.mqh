@@ -70,6 +70,7 @@ void DashLabel(string id, int x, int y, string text, color clr,
    if(fontName == "") fontName = RATT_FONT_BODY;
    string name = "RATT_DASH_" + id;
 
+   bool created = false;
    if(ObjectFind(0, name) < 0)
    {
       ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
@@ -78,6 +79,7 @@ void DashLabel(string id, int x, int y, string text, color clr,
       ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
       ObjectSetInteger(0, name, OBJPROP_ZORDER, RATT_Z_LABEL);
+      created = true;
    }
 
    ObjectSetString(0, name, OBJPROP_FONT, fontName);
@@ -85,7 +87,15 @@ void DashLabel(string id, int x, int y, string text, color clr,
    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetString(0, name, OBJPROP_TEXT, text == "" ? " " : text);
+   // Su testo vuoto: setta " " solo se l'oggetto e' appena stato creato
+   // (un OBJ_LABEL senza testo non si renderizza). Per oggetti gia'
+   // esistenti skippa l'update — evita flicker e mantiene l'ultimo testo.
+   if(text == "")
+   {
+      if(created) ObjectSetString(0, name, OBJPROP_TEXT, " ");
+      return;
+   }
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
 }
 
 //+------------------------------------------------------------------+

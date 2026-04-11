@@ -50,6 +50,10 @@ bool IsNewBar()
 //+------------------------------------------------------------------+
 double GetSpreadPips()
 {
+   // Guard: se g_pipSize non e' ancora popolato (dashboard interrogata
+   // prima di InstrumentPresetsInit), PointsToPips ritornerebbe 0 e lo
+   // spread mostrato sarebbe artificialmente piatto.
+   if(g_pipSize <= 0) return 1.0;
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    if(ask <= 0 || bid <= 0) return 1.0;

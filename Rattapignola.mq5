@@ -53,6 +53,22 @@
 #property strict
 
 //+------------------------------------------------------------------+
+//| RESOURCE — UTBotAdaptive embedded per rendering candele          |
+//|                                                                  |
+//| L'indicatore UTBotAdaptive.ex5 viene incluso come risorsa nel    |
+//| file .ex5 dell'EA. In OnInit lo carichiamo via iCustom + path    |
+//| "::Indicators\\UTBotAdaptive.ex5" e lo aggiungiamo al chart con  |
+//| ChartIndicatorAdd quando ColorCandlesByTrend=true. L'EA NON      |
+//| legge i buffer dell'indicatore: tutta la logica resta nell'      |
+//| engine; l'indicatore disegna SOLO le candele colorate per trend  |
+//| con DRAW_COLOR_CANDLES (cosa che gli EA non possono fare).       |
+//|                                                                  |
+//| IMPORTANTE: prima di compilare l'EA, compilare F7 il file        |
+//| Indicators\UTBotAdaptive.mq5 → genera UTBotAdaptive.ex5.         |
+//+------------------------------------------------------------------+
+#resource "\\Indicators\\UTBotAdaptive.ex5"
+
+//+------------------------------------------------------------------+
 //| INCLUDE MODULES — Ordine di dipendenza rigoroso                  |
 //+------------------------------------------------------------------+
 
@@ -95,6 +111,110 @@
 #include "UI/rattSignalMarkers.mqh"
 
 //+------------------------------------------------------------------+
+//| UTBotAdaptive embedded indicator — handle & helpers              |
+//|                                                                  |
+//| Indicatore caricato in modalita' "solo grafica": viene aggiunto  |
+//| al chart per disegnare le candele colorate per trend (stile      |
+//| b.png) ma l'EA NON legge mai i suoi buffer. Tutta la logica      |
+//| trading resta nell'engine Rattapignola.                          |
+//+------------------------------------------------------------------+
+int g_utbVisualHandle = INVALID_HANDLE;
+
+// Mapping enum tra EA e indicatore embedded:
+// - Sorgente: ENUM_UTB_SRC_TYPE (engine) ed ENUM_SRC_TYPE (indicatore) hanno
+//   gli stessi numeric value 0=CLOSE, 1=HMA, 2=KAMA, 3=JMA → cast diretto.
+// - TF preset: engine ENUM_UTB_TF_PRESET ha solo {AUTO=0, MANUAL=1} mentre
+//   l'indicatore ne ha 8 {AUTO=0, M1=1, M5=2, M15=3, M30=4, H1=5, H4=6,
+//   MANUAL=7}. Quindi NON si puo' castare direttamente: AUTO mappa 0→0,
+//   MANUAL mappa 1→7. Le tabelle preset di engine e indicatore sono 1:1
+//   identiche (verificato), quindi passando AUTO ad entrambi si ottengono
+//   gli stessi parametri effective sul TF corrente.
+#define UTB_IND_TF_PRESET_AUTO    0
+#define UTB_IND_TF_PRESET_MANUAL  7
+
+bool LoadUTBVisualIndicator()
+{
+   if(!ColorCandlesByTrend) return true;
+   if(g_utbVisualHandle != INVALID_HANDLE) return true;  // already loaded
+
+   int indPreset = (InpUTBPreset == UTB_TF_MANUAL)
+                   ? UTB_IND_TF_PRESET_MANUAL
+                   : UTB_IND_TF_PRESET_AUTO;
+
+   // Passiamo gli input raw dell'utente: l'indicatore applica internamente
+   // il preset (tabella identica all'engine) e calcola gli stessi trail.
+   // Niente dipendenza da g_utb_* effective: questa funzione puo' girare
+   // anche prima di EngineInit.
+   g_utbVisualHandle = iCustom(_Symbol, PERIOD_CURRENT,
+                               "::Indicators\\UTBotAdaptive.ex5",
+                               indPreset,           // InpTFPreset
+                               InpKeyValue,         // InpKeyValue
+                               InpATRPeriod_UTB,    // InpATRPeriod
+                               (int)InpSrcType,     // InpSrcType (0..3, match engine)
+                               InpHMAPeriod,        // InpHMAPeriod
+                               InpKAMA_N,           // InpKAMA_N
+                               InpKAMA_Fast,        // InpKAMA_Fast
+                               InpKAMA_Slow,        // InpKAMA_Slow
+                               InpJMA_Period,       // InpJMA_Period
+                               InpJMA_Phase,        // InpJMA_Phase
+                               false,               // InpUseBias
+                               PERIOD_H1,           // InpBiasTF (dummy, bias off)
+                               true,                // InpColorBars (★ candele colorate ON)
+                               false,               // InpShowArrows (★ frecce le disegna l'EA)
+                               false,               // InpApplyTheme (★ tema gestito dall'EA)
+                               false,               // InpShowGrid
+                               (color)0,            // InpThemeBG     (ignorato, theme off)
+                               (color)0,            // InpThemeFG
+                               (color)0,            // InpThemeGrid
+                               (color)0,            // InpThemeBullCandl
+                               (color)0,            // InpThemeBearCandl
+                               false,               // InpAlertPopup  (★ no alert duplicati)
+                               false,               // InpAlertPush   (★ no alert duplicati)
+                               false,               // InpShowDashboard (★ dash off in embed)
+                               false);              // InpShowTrailLine (★ trail off in embed)
+
+   if(g_utbVisualHandle == INVALID_HANDLE)
+   {
+      AdLogE(LOG_CAT_INIT, StringFormat("UTBotAdaptive embed: iCustom FAILED (err=%d)",
+             GetLastError()));
+      return false;
+   }
+
+   if(!ChartIndicatorAdd(0, 0, g_utbVisualHandle))
+   {
+      AdLogE(LOG_CAT_INIT, StringFormat("UTBotAdaptive embed: ChartIndicatorAdd FAILED (err=%d)",
+             GetLastError()));
+      IndicatorRelease(g_utbVisualHandle);
+      g_utbVisualHandle = INVALID_HANDLE;
+      return false;
+   }
+
+   AdLogI(LOG_CAT_INIT, "UTBotAdaptive embedded indicator loaded — candle coloring active");
+   return true;
+}
+
+void UnloadUTBVisualIndicator()
+{
+   if(g_utbVisualHandle == INVALID_HANDLE) return;
+
+   int total = ChartIndicatorsTotal(0, 0);
+   for(int i = total - 1; i >= 0; i--)
+   {
+      string name = ChartIndicatorName(0, 0, i);
+      if(StringFind(name, "UTBot") >= 0 || StringFind(name, "UT Bot") >= 0)
+      {
+         ChartIndicatorDelete(0, 0, name);
+         break;
+      }
+   }
+   // Log warning se IndicatorRelease fallisce: aiuta a diagnosticare
+   // memory leak rari su handle indicatori (risorsa limitata MT5).
+   if(!IndicatorRelease(g_utbVisualHandle))
+      AdLogW(LOG_CAT_INIT, StringFormat("UTBot visual IndicatorRelease failed (err=%d)", GetLastError()));
+   g_utbVisualHandle = INVALID_HANDLE;
+}
+
+//+------------------------------------------------------------------+
 //| Expert initialization                                            |
 //+------------------------------------------------------------------+
 int OnInit()
@@ -115,6 +235,16 @@ int OnInit()
 
    // Dashboard prima di tutto — visibile anche in caso di errore
    ApplyChartTheme();
+
+   // Carica subito l'indicatore UTBotAdaptive embedded (rendering candele).
+   // DEVE girare DOPO ApplyChartTheme (che ha appena nascosto le candele
+   // native settando CHART_COLOR_CANDLE_*=BG_DEEP) e PRIMA del check
+   // EnableSystem: cosi' anche con sistema disabilitato il chart non
+   // resta nero ma mostra le candele colorate. La funzione passa gli
+   // input raw all'indicatore, quindi NON dipende da g_utb_* (engine
+   // non ancora inizializzato in questo punto).
+   LoadUTBVisualIndicator();
+
    CreateDashboard();
 
    if(!EnableSystem)
@@ -261,6 +391,7 @@ void OnDeinit(const int reason)
    }
 
    // Rilascio risorse
+   UnloadUTBVisualIndicator();
    EngineDeinit();
    g_engineReady = false;
 
@@ -381,6 +512,24 @@ void OnTick()
          passChecks = false;
          Alert(StringFormat("Rattapignola BLOCCATO: HTF filter ha bloccato %s | %s",
                sig.direction > 0 ? "BUY" : "SELL", _Symbol));
+      }
+
+      // TP validation: il broker rifiuterebbe l'ordine, scartiamo il segnale
+      // prima di qualsiasi side effect (alert, history, marker, ordine).
+      if(TPMode != TP_SIGNAL_TO_SIGNAL && sig.tpPrice > 0)
+      {
+         bool tpInvalidBuy  = (sig.direction > 0 && sig.tpPrice <= sig.entryPrice);
+         bool tpInvalidSell = (sig.direction < 0 && sig.tpPrice >= sig.entryPrice);
+         if(tpInvalidBuy || tpInvalidSell)
+         {
+            AdLogW(LOG_CAT_TRIGGER, StringFormat(
+                   "BLOCCATO: TP invalido %s TP=%s Entry=%s — segnale scartato",
+                   sig.direction > 0 ? "BUY" : "SELL",
+                   FormatPrice(sig.tpPrice), FormatPrice(sig.entryPrice)));
+            Alert(StringFormat("Rattapignola BLOCCATO: TP invalido %s | %s",
+                  sig.direction > 0 ? "BUY" : "SELL", _Symbol));
+            passChecks = false;
+         }
       }
 
       if(passChecks)

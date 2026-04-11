@@ -68,9 +68,14 @@ void ReleaseATRHandle()
 {
    if(g_atrHandle != INVALID_HANDLE)
    {
-      IndicatorRelease(g_atrHandle);
+      // Log warning se IndicatorRelease fallisce: gli handle indicatori
+      // sono risorse limitate; un fallimento puo' segnalare un memory
+      // leak o un handle gia' rilasciato altrove.
+      if(!IndicatorRelease(g_atrHandle))
+         AdLogW(LOG_CAT_ATR, StringFormat("ATR IndicatorRelease failed (err=%d)", GetLastError()));
+      else
+         AdLogI(LOG_CAT_ATR, "ATR handle released");
       g_atrHandle = INVALID_HANDLE;
-      AdLogI(LOG_CAT_ATR, "ATR handle released");
    }
 }
 

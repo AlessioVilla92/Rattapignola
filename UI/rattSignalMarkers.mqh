@@ -63,7 +63,17 @@ color GetSignalArrowColor(bool isBuy, double er)
 //+------------------------------------------------------------------+
 //| DrawSignalArrow — ER-colored arrow with ATR offset               |
 //|  arrowCode 233=up (BUY), 234=down (SELL)                         |
-//|  Positioning: low - ATR*0.5 (BUY), high + ATR*0.5 (SELL)        |
+//|  Positioning: low - ATR*RATT_ARROW_OFFSET (BUY)                  |
+//|               high + ATR*RATT_ARROW_OFFSET (SELL)                |
+//|                                                                  |
+//|  ── LEGENDA COLORI (4 livelli ER, Efficiency Ratio Kaufman) ──   |
+//|  ER misura quanto direzionale e' il movimento (0=random/range,  |
+//|  1=trend perfetto). Calcolato in UTBCalcER() (engine).           |
+//|                                                                  |
+//|    ER >= 0.60   BUY=verde scuro  SELL=rosso     FORTE            |
+//|    ER 0.35-0.59 BUY=verde chiaro SELL=arancio   MODERATO         |
+//|    ER 0.15-0.34 BUY=giallo       SELL=giallo    DEBOLE           |
+//|    ER <  0.15   BUY=grigio       SELL=grigio    RANGING (chop)   |
 //+------------------------------------------------------------------+
 void DrawSignalArrow(const EngineSignal &sig)
 {
@@ -257,7 +267,9 @@ void DrawTriggerCandleHighlight(datetime barTime)
    ObjectCreate(0, name, OBJ_RECTANGLE, 0, barTime, high, t2, low);
    ObjectSetInteger(0, name, OBJPROP_COLOR, RATT_TRIGGER_CANDLE_CLR);
    ObjectSetInteger(0, name, OBJPROP_FILL, true);
-   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+   // Foreground: deve restare sopra trail line e rettangoli trend candle.
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 400);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
 }

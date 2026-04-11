@@ -219,6 +219,57 @@ void UTBResetJMAState()
 }
 
 //+------------------------------------------------------------------+
+//| UTBWarmupJMA — Pre-warm JMA state on historical closes           |
+//|                                                                  |
+//| Riempie lo stato persistente (8 array + scalari) iterando        |
+//| UTBCalcJMA su `bars` chiusure storiche, dalla piu' vecchia alla  |
+//| piu' recente. Necessario al boot e dopo recovery: la JMA         |
+//| richiede ~100+ barre per convergere; senza warmup i primi        |
+//| segnali post-restart sono falsi finche' lo stato non si stabilizza.|
+//|                                                                  |
+//| Sicuro da chiamare anche su fresh start: lo stato e' gia' resettato|
+//| da UTBResetJMAState e g_utb_jma_init=false al primo UTBCalcJMA.  |
+//+------------------------------------------------------------------+
+void UTBWarmupJMA(int bars = 200)
+{
+   if(bars < 10) bars = 10;
+   if(bars > g_utb_jma_histMax) bars = g_utb_jma_histMax;
+
+   int totalBars = iBars(_Symbol, PERIOD_CURRENT);
+   if(totalBars < 5)
+   {
+      AdLogW(LOG_CAT_UTB, StringFormat("JMA warmup skipped — only %d bars available", totalBars));
+      return;
+   }
+   if(bars > totalBars - 1) bars = totalBars - 1;
+
+   // CopyClose: shift 1 = bar[1] (anti-repaint), `bars` chiusure storiche.
+   // Indice 0 = bar piu' vecchia, indice bars-1 = bar[1] piu' recente.
+   double closes[];
+   ArraySetAsSeries(closes, false);
+   int copied = CopyClose(_Symbol, PERIOD_CURRENT, 1, bars, closes);
+   if(copied < bars)
+   {
+      AdLogW(LOG_CAT_UTB, StringFormat("JMA warmup: only %d/%d closes copied", copied, bars));
+      if(copied < 10) return;
+   }
+
+   // UTBCalcJMA legge solo close[1]; usiamo un buffer 3-elementi as-series.
+   double tmp[3];
+   ArraySetAsSeries(tmp, true);
+   tmp[0] = 0; tmp[2] = 0;
+
+   for(int i = 0; i < copied; i++)
+   {
+      tmp[1] = closes[i];
+      UTBCalcJMA(tmp, 3);
+   }
+
+   AdLogI(LOG_CAT_UTB, StringFormat("JMA warmup: %d bars processed | histLen=%d",
+          copied, g_utb_jma_histLen));
+}
+
+//+------------------------------------------------------------------+
 //| WMAOnArray — WMA at specific index on a price array              |
 //| Building block for HMA. From UTBotAdaptive.mq5 lines 732-742    |
 //|                                                                  |
@@ -228,6 +279,10 @@ void UTBResetJMAState()
 //+------------------------------------------------------------------+
 double WMAOnArray(const double &price[], int idx, int period, int arraySize)
 {
+   // Guard difensivo: previene out-of-bounds se idx e' al limite del buffer
+   // (regressioni future con buffer sotto-dimensionati). In condizioni
+   // normali l'engine alloca sempre buffer abbastanza grandi.
+   if(idx < 0 || idx >= arraySize) return 0.0;
    double num = 0, den = 0;
    for(int k = 0; k < period && (idx + k) < arraySize; k++)
    {
@@ -529,13 +584,17 @@ bool EngineInit()
       return false;
    }
 
-   //--- 3. Pre-calculate JMA constants ---
+   //--- 3. Pre-calculate JMA constants + warmup historical state ---
    if(InpSrcType == UTB_SRC_JMA)
    {
       UTBInitJMAConstants();
       UTBResetJMAState();
       AdLogI(LOG_CAT_UTB, StringFormat("JMA constants: PR=%.3f len1=%.3f pow1=%.3f bet=%.4f beta=%.4f",
              g_utb_jma_PR, g_utb_jma_len1, g_utb_jma_pow1, g_utb_jma_bet, g_utb_jma_beta));
+      // Warmup: alimenta lo stato JMA con ~200 barre storiche, cosi' i
+      // primi segnali post-init/post-recovery sono coerenti col pre-crash
+      // (la JMA richiede ~100+ barre per convergere).
+      UTBWarmupJMA(200);
    }
 
    //--- 4. Create SqueezeMomentum handle (if enabled) ---
@@ -592,14 +651,16 @@ void EngineDeinit()
    //--- Release ATR handle ---
    if(g_utb_atrHandle != INVALID_HANDLE)
    {
-      IndicatorRelease(g_utb_atrHandle);
+      if(!IndicatorRelease(g_utb_atrHandle))
+         AdLogW(LOG_CAT_UTB, StringFormat("Engine ATR IndicatorRelease failed (err=%d)", GetLastError()));
       g_utb_atrHandle = INVALID_HANDLE;
    }
 
    //--- Release SQZ handle ---
    if(g_sqzHandle != INVALID_HANDLE)
    {
-      IndicatorRelease(g_sqzHandle);
+      if(!IndicatorRelease(g_sqzHandle))
+         AdLogW(LOG_CAT_UTB, StringFormat("SQZ IndicatorRelease failed (err=%d)", GetLastError()));
       g_sqzHandle = INVALID_HANDLE;
    }
 

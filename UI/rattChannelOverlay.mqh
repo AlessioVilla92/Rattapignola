@@ -58,7 +58,6 @@
 //| VARIABILI GLOBALI OVERLAY                                        |
 //+------------------------------------------------------------------+
 int     g_ovlLastDepth   = 0;     // Profondita' effettiva dell'ultimo disegno (per cleanup segmenti)
-int     g_tcolLastDepth  = 0;     // Profondita' effettiva delle candele trend (per cleanup)
 
 //+------------------------------------------------------------------+
 //| IsNewBarOverlay — Rileva nuova barra per l'overlay               |
@@ -120,24 +119,19 @@ void DrawChannelOverlay()
    depth = MathMin(depth, totalBars - lookback);
 
    // Pulizia segmenti orfani: se la depth e' diminuita rispetto
-   // all'ultimo disegno, elimina gli oggetti che non servono piu'
+   // all'ultimo disegno, elimina gli oggetti che non servono piu'.
+   // Guard ObjectFind per evitare error 4202 nei log Experts su
+   // oggetti gia' assenti (es. dopo cleanup parziale o cambio chart).
    if(g_ovlLastDepth > depth)
    {
       for(int i = depth; i < g_ovlLastDepth; i++)
       {
          string pfx = "RATT_OVL_" + IntegerToString(i) + "_";
-         ObjectDelete(0, pfx + "T");
+         string nm  = pfx + "T";
+         if(ObjectFind(0, nm) >= 0) ObjectDelete(0, nm);
       }
    }
    g_ovlLastDepth = depth;
-
-   // Pulizia candele trend orfane
-   if(g_tcolLastDepth > depth)
-   {
-      for(int i = depth + 1; i < g_tcolLastDepth; i++)
-         ObjectDelete(0, "RATT_TCOL_" + IntegerToString(i));
-   }
-   g_tcolLastDepth = depth + 1;
 
    int bufSize = depth + lookback;
 
@@ -350,61 +344,11 @@ void DrawChannelOverlay()
       ArrayCopy(g_utb_jma_src_arr, save_src_arr);
    }
 
-   // STEP 2: Candele colorate per trend (UTBotAdaptive style)
-   // Disegnate PRIMA dei trail → i trail (creati dopo) renderizzano sopra
-   if(ColorCandlesByTrend)
-   {
-      double highBuf[], lowBuf[];
-      ArraySetAsSeries(highBuf, true);
-      ArraySetAsSeries(lowBuf, true);
-      CopyHigh(_Symbol, PERIOD_CURRENT, 0, depth + 1, highBuf);
-      CopyLow(_Symbol, PERIOD_CURRENT, 0, depth + 1, lowBuf);
+   // STEP 2: Le candele colorate per trend sono disegnate dall'indicatore
+   // UTBotAdaptive embedded come resource (vedi Rattapignola.mq5 #resource +
+   // iCustom in OnInit). L'EA non disegna piu' rettangoli RATT_TCOL_.
 
-      int perSec = PeriodSeconds();
-
-      for(int i = 0; i <= depth; i++)
-      {
-         if(arrTrail[i] <= 0 || arrSrc[i] <= 0) continue;
-
-         // Trend color: src > trail → teal, src <= trail → coral
-         color trendClr = (arrSrc[i] > arrTrail[i]) ? RATT_CHAN_TRAIL_BULL : RATT_CHAN_TRAIL_BEAR;
-
-         double candleHigh = highBuf[i];
-         double candleLow  = lowBuf[i];
-
-         // Flat bar: ensure minimum visible size
-         if(MathAbs(candleHigh - candleLow) < _Point)
-         {
-            candleHigh += _Point;
-            candleLow  -= _Point;
-         }
-
-         datetime t1 = arrT[i];
-         datetime t2 = t1 + perSec;
-
-         string name = "RATT_TCOL_" + IntegerToString(i);
-
-         if(ObjectFind(0, name) < 0)
-         {
-            ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, candleHigh, t2, candleLow);
-            ObjectSetInteger(0, name, OBJPROP_FILL, true);
-            ObjectSetInteger(0, name, OBJPROP_BACK, false);
-            ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-            ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-         }
-         else
-         {
-            ObjectSetInteger(0, name, OBJPROP_TIME, 0, t1);
-            ObjectSetDouble(0, name, OBJPROP_PRICE, 0, candleHigh);
-            ObjectSetInteger(0, name, OBJPROP_TIME, 1, t2);
-            ObjectSetDouble(0, name, OBJPROP_PRICE, 1, candleLow);
-         }
-         ObjectSetInteger(0, name, OBJPROP_COLOR, trendClr);
-      }
-   }
-
-   // STEP 3: Disegna segmenti trail (OBJ_TREND)
-   // Creati DOPO i rettangoli → renderizzano sopra (foreground, creation order)
+   // STEP 3: Disegna segmenti trail (OBJ_TREND) — sopra le candele dell'indicatore
    if(ShowChannelOverlay)
    {
       for(int i = 0; i < depth; i++)
@@ -496,43 +440,8 @@ void UpdateChannelLiveEdge()
       }
    }
 
-   // Live trend candle color per bar[0]
-   if(ColorCandlesByTrend)
-   {
-      if(!ShowChannelOverlay)
-      {
-         // Fallback: usa l'engine g_utb_lastTrail dal tick precedente
-         isBull = (src0 > g_utb_lastTrail);
-      }
-
-      double high0 = iHigh(_Symbol, PERIOD_CURRENT, 0);
-      double low0  = iLow(_Symbol, PERIOD_CURRENT, 0);
-      if(MathAbs(high0 - low0) < _Point)
-      {
-         high0 += _Point;
-         low0  -= _Point;
-      }
-
-      color trendClr = isBull ? RATT_CHAN_TRAIL_BULL : RATT_CHAN_TRAIL_BEAR;
-      string nameTC = "RATT_TCOL_0";
-      datetime t2 = t0 + PeriodSeconds();
-
-      if(ObjectFind(0, nameTC) < 0)
-      {
-         ObjectCreate(0, nameTC, OBJ_RECTANGLE, 0, t0, high0, t2, low0);
-         ObjectSetInteger(0, nameTC, OBJPROP_FILL, true);
-         ObjectSetInteger(0, nameTC, OBJPROP_BACK, false);
-         ObjectSetInteger(0, nameTC, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(0, nameTC, OBJPROP_HIDDEN, true);
-      }
-      else
-      {
-         ObjectSetDouble(0, nameTC, OBJPROP_PRICE, 0, high0);
-         ObjectSetDouble(0, nameTC, OBJPROP_PRICE, 1, low0);
-         ObjectSetInteger(0, nameTC, OBJPROP_TIME, 1, t2);
-      }
-      ObjectSetInteger(0, nameTC, OBJPROP_COLOR, trendClr);
-   }
+   // Live candle coloring (bar[0]) gestito dall'indicatore UTBotAdaptive
+   // embedded — vedi Rattapignola.mq5 OnInit.
 }
 
 //+------------------------------------------------------------------+
@@ -552,8 +461,11 @@ void DrawOverlayLineDynColor(string name, datetime t1, double p1, datetime t2, d
       ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
       ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-      ObjectSetInteger(0, name, OBJPROP_BACK, true);
-      ObjectSetInteger(0, name, OBJPROP_ZORDER, 50);
+      // Con ColorCandlesByTrend i rettangoli trend hanno BACK=false, quindi
+      // il trail deve passare in foreground per restare visibile sopra di essi.
+      bool trailFront = ColorCandlesByTrend;
+      ObjectSetInteger(0, name, OBJPROP_BACK, trailFront ? false : true);
+      ObjectSetInteger(0, name, OBJPROP_ZORDER, trailFront ? 350 : 50);
       ObjectSetInteger(0, name, OBJPROP_STYLE, style);
       ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
    }
@@ -662,7 +574,6 @@ void CleanupOverlay()
    ObjectsDeleteAll(0, "RATT_OVL_");     // Segmenti trail
    ObjectsDeleteAll(0, "RATT_TP_");      // Linee e dot TP
    ObjectsDeleteAll(0, "RATT_TRIG_VL_"); // VLine trigger
-   ObjectsDeleteAll(0, "RATT_TCOL_");    // Candele colorate per trend
-   g_ovlLastDepth  = 0;
-   g_tcolLastDepth = 0;
+   ObjectsDeleteAll(0, "RATT_TCOL_");    // Candele colorate (legacy v1.2 — pulizia migrazione)
+   g_ovlLastDepth = 0;
 }
