@@ -1,66 +1,36 @@
 //+------------------------------------------------------------------+
 //|                                      rattChannelOverlay.mqh      |
-//|           Rattapignola EA v1.0.0 — Channel Overlay               |
+//|           Rattapignola EA v1.3.0 — Trend Candles + Trail + TP    |
 //|                                                                  |
-//|  Visualizzazione grafica del trailing stop UTBot sul chart.      |
-//|  Disegna il trail stop come linea singola teal/coral              |
-//|  (colore dinamico bull/bear) segmento per segmento.              |
+//|  Rendering grafico diretto dall'EA:                              |
+//|   - Candele colorate per trend (body OBJ_RECTANGLE + wick        |
+//|     OBJ_TREND) — teal bull, coral bear, giallo trigger           |
+//|   - Trail line (OBJ_TREND segmenti, colore dinamico bull/bear)   |
+//|   - Frecce storiche ER-colored (OBJ_ARROW)                      |
+//|   - Entry level (OBJ_HLINE dashed viola)                         |
+//|   - TP markers per ciclo trading                                 |
 //|                                                                  |
-//|  ═══════════════════════════════════════════════════════════════  |
-//|  ARCHITETTURA A DUE LIVELLI:                                     |
-//|  ═══════════════════════════════════════════════════════════════  |
+//|  Calcoli identici all'indicatore UTBotAdaptive.mq5:              |
+//|   - ATR Wilder (RMA, non SMA) per nLoss                         |
+//|   - Sorgente adattiva (Close/KAMA/HMA/JMA)                      |
+//|   - Trail stop 4-branch ratchet                                  |
+//|   - ER classification a 4 livelli                                |
 //|                                                                  |
-//|  1. FULL REDRAW (DrawChannelOverlay) — solo su nuova barra:      |
-//|     Calcola il trailing stop UTBot per tutte le barre storiche   |
-//|     (da bar[depth] a bar[0]) e disegna il trail con colore       |
-//|     dinamico bull/bear per ogni segmento.                        |
-//|                                                                  |
-//|  2. LIVE EDGE UPDATE (UpdateChannelLiveEdge) — ogni 500ms:       |
-//|     Aggiorna SOLO il segmento index=0 (che collega bar[1] a      |
-//|     bar[0]) per il trail. Mantiene il bordo destro sincronizzato |
-//|     con la candela in formazione.                                |
-//|                                                                  |
-//|  ═══════════════════════════════════════════════════════════════  |
-//|  NAMING CONVENTION OGGETTI CHART:                                |
-//|  ═══════════════════════════════════════════════════════════════  |
-//|                                                                  |
-//|   Trail stop (depth segmenti):                                   |
-//|   "RATT_OVL_{i}_T"  — Trail stop, segmento i (colore dinamico)  |
-//|                                                                  |
-//|   TP:                                                            |
-//|   "RATT_TP_LINE_{id}" — Linea orizzontale TP per ciclo          |
-//|   "RATT_TP_DOT_{id}"  — Punto cerchio TP per ciclo              |
-//|   "RATT_TP_HIT_{id}"  — Stella quando TP viene raggiunto        |
-//|   "RATT_TP_STAR_{B|S}_{time}" — Asterisco giallo TP preview     |
-//|   "RATT_TRIG_VL_{t}"  — VLine trigger                           |
-//|                                                                  |
-//|  ═══════════════════════════════════════════════════════════════  |
-//|  CLEANUP:                                                        |
-//|  ═══════════════════════════════════════════════════════════════  |
-//|                                                                  |
-//|  - CleanupOverlay(): ObjectsDeleteAll("RATT_OVL_") cattura tutti |
-//|    i segmenti trail. Chiamata da OnDeinit().                     |
-//|                                                                  |
-//|  ═══════════════════════════════════════════════════════════════  |
-//|  DIPENDENZE:                                                     |
-//|  ═══════════════════════════════════════════════════════════════  |
-//|                                                                  |
-//|   - Engine/rattUTBotEngine.mqh: g_utb_atrHandle, g_utb_keyValue, |
-//|     g_utb_atrPeriod                                              |
-//|   - Config/rattVisualTheme.mqh: RATT_CHAN_* defines              |
-//|   - Config/rattInputParameters.mqh: ShowChannelOverlay,          |
-//|     OverlayDepth, ShowTPTargetLines, EnableHedge, HsEnabled,     |
-//|     HsShowZones, HsTriggerPct                                    |
+//|  NAMING CONVENTION:                                              |
+//|   RATT_TCOL_B_{i}  — body candela (OBJ_RECTANGLE)               |
+//|   RATT_TCOL_W_{i}  — wick candela (OBJ_TREND)                   |
+//|   RATT_OVL_{i}_T   — trail stop segmento                        |
+//|   RATT_HSIG_{i}    — freccia storica                             |
+//|   RATT_TRIG_CDL_{t} — trigger candle highlight (giallo)          |
+//|   RATT_ENTRY_LEVEL — entry level HLINE                           |
+//|   RATT_TP_*        — TP markers                                  |
 //+------------------------------------------------------------------+
 #property copyright "Rattapignola (C) 2026"
 
-//+------------------------------------------------------------------+
-//| VARIABILI GLOBALI OVERLAY                                        |
-//+------------------------------------------------------------------+
-int     g_ovlLastDepth   = 0;     // Profondita' effettiva dell'ultimo disegno (per cleanup segmenti)
+int g_ovlLastDepth = 0;
 
 //+------------------------------------------------------------------+
-//| IsNewBarOverlay — Rileva nuova barra per l'overlay               |
+//| IsNewBarOverlay — Rileva nuova barra (gate per pipeline OnTick)  |
 //+------------------------------------------------------------------+
 bool IsNewBarOverlay()
 {
@@ -72,93 +42,91 @@ bool IsNewBarOverlay()
 }
 
 //+------------------------------------------------------------------+
-//| DrawChannelOverlay — Disegno COMPLETO del trailing stop UTBot    |
-//|                                                                  |
-//| SCOPO: Calcola il trailing stop UTBot per tutte le barre da      |
-//|        bar[depth] a bar[0] e disegna la trail line (colore       |
-//|        dinamico bull/bear) e la source line.                     |
-//|                                                                  |
-//| QUANDO VIENE CHIAMATA:                                           |
-//|   - OnInit(): disegno iniziale all'avvio EA                      |
-//|   - OnTimer(): retry se i dati non erano pronti in OnInit        |
-//|   - OnTick(): SOLO su nuova barra (gate IsNewBarOverlay)         |
-//|                                                                  |
-//| PIPELINE:                                                        |
-//|   1. Valida parametri (depth, barre disponibili, atrPeriod)     |
-//|   2. Cleanup segmenti stale se la depth e' diminuita             |
-//|   3. Carica ATR e Close buffer per calcolo trailing stop         |
-//|   4. Calcola trail stop barra per barra (oldest to newest)       |
-//|   5. Disegna 2 linee per ogni coppia di barre adiacenti:         |
-//|      - Trail stop (colore dinamico bull/bear)                    |
-//|      - Source line (yellow firefly)                               |
-//|   6. Disegna fill trasparente CCanvas tra source e trail         |
+//| GetSignalArrowColor — 4 livelli ER (UTBotAdaptive style)         |
 //+------------------------------------------------------------------+
+color GetSignalArrowColor(bool isBuy, double er)
+{
+   int erIdx = (er >= 0.60) ? 0 : (er >= 0.35) ? 1 : (er >= 0.15) ? 2 : 3;
+   if(isBuy)
+   {
+      if(erIdx == 0) return RATT_ARROW_BUY_0;
+      if(erIdx == 1) return RATT_ARROW_BUY_1;
+      if(erIdx == 2) return RATT_ARROW_BUY_2;
+      return RATT_ARROW_BUY_3;
+   }
+   else
+   {
+      if(erIdx == 0) return RATT_ARROW_SELL_0;
+      if(erIdx == 1) return RATT_ARROW_SELL_1;
+      if(erIdx == 2) return RATT_ARROW_SELL_2;
+      return RATT_ARROW_SELL_3;
+   }
+}
 
+//+------------------------------------------------------------------+
+//| DrawChannelOverlay — Disegno completo: candele trend + trail +   |
+//|                      frecce storiche + entry level               |
+//|                                                                  |
+//| Pipeline identica all'indicatore UTBotAdaptive.mq5 OnCalculate: |
+//| 1. ATR Wilder (SMA seed + RMA smoothing)                        |
+//| 2. Sorgente adattiva (Close/KAMA/HMA/JMA)                       |
+//| 3. Trail stop 4-branch                                          |
+//| 4. Candle coloring: src>trail=teal, src<trail=coral, xover=giallo|
+//| 5. Trail line segmenti teal/coral                                |
+//| 6. Frecce BUY/SELL ER-colored                                    |
+//| 7. Entry level dashed viola                                      |
+//+------------------------------------------------------------------+
 void DrawChannelOverlay()
 {
    if(!ShowChannelOverlay && !ColorCandlesByTrend) return;
 
-   // Parametri: depth = quante barre disegnare, atrPeriod per lookback
    int depth = MathMax(1, OverlayDepth);
    int totalBars = iBars(_Symbol, PERIOD_CURRENT);
    int atrPeriod = (g_utb_atrPeriod > 0) ? g_utb_atrPeriod : 14;
    int lookback = MathMax(atrPeriod, 50) + 5;
 
-   // Extra lookback per sorgente adattiva (come ScanHistoricalSignals)
    if(InpSrcType == UTB_SRC_HMA)
       lookback += g_utb_hmaPeriod * 2 + 10;
    else if(InpSrcType == UTB_SRC_KAMA)
       lookback += g_utb_kamaN + 5;
 
-   // Serve almeno lookback barre per calcolare il trailing stop
-   if(totalBars < lookback + 5)
-   {
-      AdLogW(LOG_CAT_UI, StringFormat("DrawChannelOverlay: insufficient bars (%d < %d)", totalBars, lookback + 5));
-      return;
-   }
+   if(totalBars < lookback + 5) return;
    depth = MathMin(depth, totalBars - lookback);
 
-   // Pulizia segmenti orfani: se la depth e' diminuita rispetto
-   // all'ultimo disegno, elimina gli oggetti che non servono piu'.
-   // Guard ObjectFind per evitare error 4202 nei log Experts su
-   // oggetti gia' assenti (es. dopo cleanup parziale o cambio chart).
+   // Cleanup segmenti orfani se depth diminuita
    if(g_ovlLastDepth > depth)
    {
       for(int i = depth; i < g_ovlLastDepth; i++)
       {
          string pfx = "RATT_OVL_" + IntegerToString(i) + "_";
-         string nm  = pfx + "T";
+         string nm = pfx + "T";
          if(ObjectFind(0, nm) >= 0) ObjectDelete(0, nm);
+         string nb = "RATT_TCOL_B_" + IntegerToString(i);
+         if(ObjectFind(0, nb) >= 0) ObjectDelete(0, nb);
+         string nw = "RATT_TCOL_W_" + IntegerToString(i);
+         if(ObjectFind(0, nw) >= 0) ObjectDelete(0, nw);
       }
    }
    g_ovlLastDepth = depth;
 
    int bufSize = depth + lookback;
 
-   // Carica ATR buffer
-   double atrBuf[];
-   ArraySetAsSeries(atrBuf, true);
-   int atrCopied = CopyBuffer(g_utb_atrHandle, 0, 0, bufSize, atrBuf);
-   if(atrCopied < bufSize)
-   {
-      AdLogW(LOG_CAT_UI, StringFormat("DrawChannelOverlay: ATR copy failed (%d < %d)", atrCopied, bufSize));
-      return;
-   }
-
-   // Carica Close buffer
-   double closeBuf[];
+   // Carica OHLC + ATR data
+   double highBuf[], lowBuf[], openBuf[], closeBuf[];
+   ArraySetAsSeries(highBuf, true);
+   ArraySetAsSeries(lowBuf, true);
+   ArraySetAsSeries(openBuf, true);
    ArraySetAsSeries(closeBuf, true);
-   int closeCopied = CopyClose(_Symbol, PERIOD_CURRENT, 0, bufSize, closeBuf);
-   if(closeCopied < bufSize)
-   {
-      AdLogW(LOG_CAT_UI, StringFormat("DrawChannelOverlay: Close copy failed (%d < %d)", closeCopied, bufSize));
-      return;
-   }
+
+   if(CopyHigh(_Symbol, PERIOD_CURRENT, 0, bufSize, highBuf) < bufSize) return;
+   if(CopyLow(_Symbol, PERIOD_CURRENT, 0, bufSize, lowBuf) < bufSize) return;
+   if(CopyOpen(_Symbol, PERIOD_CURRENT, 0, bufSize, openBuf) < bufSize) return;
+   if(CopyClose(_Symbol, PERIOD_CURRENT, 0, bufSize, closeBuf) < bufSize) return;
 
    // ================================================================
    // JMA: Save global state before scan (avoid corruption)
    // ================================================================
-   bool   save_jma_init    = false;
+   bool   save_jma_init = false;
    int    save_jma_histLen = 0;
    double save_jma_e0 = 0, save_jma_e1 = 0, save_jma_e2 = 0, save_jma_prev = 0;
    double save_uBand[], save_lBand[], save_volty[], save_vSum[];
@@ -172,7 +140,6 @@ void DrawChannelOverlay()
       save_jma_e1      = g_utb_jma_e1;
       save_jma_e2      = g_utb_jma_e2;
       save_jma_prev    = g_utb_jma_prev;
-
       ArrayCopy(save_uBand,   g_utb_jma_uBand);
       ArrayCopy(save_lBand,   g_utb_jma_lBand);
       ArrayCopy(save_volty,   g_utb_jma_volty);
@@ -181,19 +148,22 @@ void DrawChannelOverlay()
       ArrayCopy(save_det0,    g_utb_jma_det0);
       ArrayCopy(save_det1,    g_utb_jma_det1);
       ArrayCopy(save_src_arr, g_utb_jma_src_arr);
-
       UTBResetJMAState();
    }
 
-   // ================================================================
-   // KAMA: stato locale (non tocca globali engine)
-   // ================================================================
+   // KAMA local state
    double kama_prev = 0;
    bool   kama_init = false;
    double kama_fc = 2.0 / (g_utb_kamaFast + 1.0);
    double kama_sc = 2.0 / (g_utb_kamaSlow + 1.0);
 
-   // Array temporanei: Trail, Source, Time per ogni barra visibile
+   // ATR Wilder locale per scan storico
+   double atr_w = 0;
+   bool   atr_seeded = false;
+   int    atr_count = 0;
+   double tr_sum = 0;
+
+   // Arrays per risultati visibili
    double arrTrail[], arrSrc[];
    datetime arrT[];
    ArrayResize(arrTrail, depth + 1);
@@ -202,26 +172,50 @@ void DrawChannelOverlay()
    ArrayInitialize(arrTrail, 0);
    ArrayInitialize(arrSrc, 0);
 
-   // STEP 1: Calcola trailing stop per tutte le barre (oldest to newest)
-   // Usa la SORGENTE ADATTIVA (Close/KAMA/HMA/JMA) identica all'engine
-   double trail = 0;
-   double src = 0, src_prev = 0;
+   double trail = 0, src = 0, src_prev = 0;
 
+   // Pulizia vecchi marker storici
+   ObjectsDeleteAll(0, "RATT_HSIG_");
+   ObjectsDeleteAll(0, "RATT_TRIG_CDL_");
+
+   int signalCount = 0;
+   double lastEntryPrice = 0;
+
+   // SCAN: oldest to newest (i decrescente in array as-series)
    for(int i = bufSize - 2; i >= 0; i--)
    {
-      double atr = atrBuf[i];
-      if(atr <= 0) continue;
-      double nLoss = g_utb_keyValue * atr;
+      // ATR Wilder (identica all'indicatore: SMA seed + RMA smoothing)
+      if(i + 1 < bufSize)
+      {
+         double tr = MathMax(highBuf[i], closeBuf[i + 1]) - MathMin(lowBuf[i], closeBuf[i + 1]);
+         if(!atr_seeded)
+         {
+            tr_sum += tr;
+            atr_count++;
+            if(atr_count >= atrPeriod)
+            {
+               atr_w = tr_sum / atrPeriod;
+               atr_seeded = true;
+            }
+            else
+               continue;
+         }
+         else
+         {
+            atr_w = (atr_w * (atrPeriod - 1) + tr) / atrPeriod;
+         }
+      }
 
-      // ===== Sorgente adattiva — identica all'engine =====
+      if(atr_w <= 0) continue;
+      double nLoss = g_utb_keyValue * atr_w;
+
+      // Sorgente adattiva
       double curSrc = closeBuf[i];
-
       switch(InpSrcType)
       {
          case UTB_SRC_CLOSE:
             curSrc = closeBuf[i];
             break;
-
          case UTB_SRC_KAMA:
          {
             if(!kama_init)
@@ -242,19 +236,15 @@ void DrawChannelOverlay()
                kama_prev = curSrc;
             }
             else
-            {
                curSrc = kama_prev;
-            }
             break;
          }
-
          case UTB_SRC_HMA:
          {
             int period = g_utb_hmaPeriod;
             int half = MathMax(period / 2, 2);
             int sqn  = (int)MathRound(MathSqrt((double)period));
             int needed = i + period + sqn;
-
             if(needed < bufSize)
             {
                double tmp[];
@@ -277,7 +267,6 @@ void DrawChannelOverlay()
             }
             break;
          }
-
          case UTB_SRC_JMA:
          {
             double jmaClose[3];
@@ -320,11 +309,76 @@ void DrawChannelOverlay()
          arrSrc[i] = src;
          arrT[i] = iTime(_Symbol, PERIOD_CURRENT, i);
       }
+
+      // Signal detection + frecce storiche (solo per barre nel range visibile)
+      if(i <= depth && i >= 1 && ShowSignalArrows)
+      {
+         bool isBuy  = (src_prev < trail_prev) && (src > trail);
+         bool isSell = (src_prev > trail_prev) && (src < trail);
+
+         if(isBuy || isSell)
+         {
+            double er;
+            if(InpSrcType == UTB_SRC_KAMA && (i + g_utb_kamaN) < bufSize)
+            {
+               double d = MathAbs(closeBuf[i] - closeBuf[i + g_utb_kamaN]);
+               double n = 0;
+               for(int k = 0; k < g_utb_kamaN; k++)
+                  n += MathAbs(closeBuf[i + k] - closeBuf[i + k + 1]);
+               er = (n > 0) ? d / n : 0;
+            }
+            else
+               er = (atr_w > 0) ? MathMin(1.0, MathAbs(src - src_prev) / atr_w) : 0;
+
+            if(er >= InpERWeak || InpShowWeakSig)
+            {
+               datetime barTime = iTime(_Symbol, PERIOD_CURRENT, i);
+               string arrowName = "RATT_HSIG_" + IntegerToString(i);
+               color arrowClr = GetSignalArrowColor(isBuy, er);
+               double arrowPrice;
+               int arrowCode;
+
+               if(isBuy)
+               {
+                  arrowPrice = lowBuf[i] - atr_w * RATT_ARROW_OFFSET;
+                  arrowCode = 233;
+               }
+               else
+               {
+                  arrowPrice = highBuf[i] + atr_w * RATT_ARROW_OFFSET;
+                  arrowCode = 234;
+               }
+
+               ObjectCreate(0, arrowName, OBJ_ARROW, 0, barTime, arrowPrice);
+               ObjectSetInteger(0, arrowName, OBJPROP_ARROWCODE, arrowCode);
+               ObjectSetInteger(0, arrowName, OBJPROP_COLOR, arrowClr);
+               ObjectSetInteger(0, arrowName, OBJPROP_WIDTH, RATT_ARROW_SIZE);
+               ObjectSetInteger(0, arrowName, OBJPROP_ANCHOR, isBuy ? ANCHOR_TOP : ANCHOR_BOTTOM);
+               ObjectSetInteger(0, arrowName, OBJPROP_BACK, false);
+               ObjectSetInteger(0, arrowName, OBJPROP_SELECTABLE, false);
+               ObjectSetInteger(0, arrowName, OBJPROP_HIDDEN, true);
+
+               // Trigger candle highlight (giallo)
+               datetime t2 = barTime + PeriodSeconds();
+               string trigName = "RATT_TRIG_CDL_" + TimeToString(barTime, TIME_DATE|TIME_MINUTES);
+               if(ObjectFind(0, trigName) < 0)
+               {
+                  ObjectCreate(0, trigName, OBJ_RECTANGLE, 0, barTime, highBuf[i], t2, lowBuf[i]);
+                  ObjectSetInteger(0, trigName, OBJPROP_COLOR, RATT_TRIGGER_CANDLE_CLR);
+                  ObjectSetInteger(0, trigName, OBJPROP_FILL, true);
+                  ObjectSetInteger(0, trigName, OBJPROP_BACK, false);
+                  ObjectSetInteger(0, trigName, OBJPROP_SELECTABLE, false);
+                  ObjectSetInteger(0, trigName, OBJPROP_HIDDEN, true);
+               }
+
+               lastEntryPrice = closeBuf[i];
+               signalCount++;
+            }
+         }
+      }
    }
 
-   // ================================================================
-   // JMA: Restore global state after scan
-   // ================================================================
+   // JMA: Restore global state
    if(InpSrcType == UTB_SRC_JMA)
    {
       g_utb_jma_init    = save_jma_init;
@@ -333,7 +387,6 @@ void DrawChannelOverlay()
       g_utb_jma_e1      = save_jma_e1;
       g_utb_jma_e2      = save_jma_e2;
       g_utb_jma_prev    = save_jma_prev;
-
       ArrayCopy(g_utb_jma_uBand,   save_uBand);
       ArrayCopy(g_utb_jma_lBand,   save_lBand);
       ArrayCopy(g_utb_jma_volty,   save_volty);
@@ -344,78 +397,130 @@ void DrawChannelOverlay()
       ArrayCopy(g_utb_jma_src_arr, save_src_arr);
    }
 
-   // STEP 2: Le candele colorate per trend sono disegnate dall'indicatore
-   // UTBotAdaptive embedded come resource (vedi Rattapignola.mq5 #resource +
-   // iCustom in OnInit). L'EA non disegna piu' rettangoli RATT_TCOL_.
+   // DISEGNO: candele colorate per trend + trail line
+   int perSec = PeriodSeconds();
 
-   // STEP 3: Disegna segmenti trail (OBJ_TREND) — sopra le candele dell'indicatore
-   if(ShowChannelOverlay)
+   for(int i = 0; i < depth; i++)
    {
-      for(int i = 0; i < depth; i++)
+      if(arrTrail[i] <= 0 || arrSrc[i] <= 0) continue;
+      datetime t1 = arrT[i];
+      if(t1 == 0) continue;
+
+      bool isBull = (arrSrc[i] > arrTrail[i]);
+
+      // === CANDELE COLORATE PER TREND ===
+      if(ColorCandlesByTrend && i >= 1)
       {
-         if(arrTrail[i] <= 0 || arrTrail[i + 1] <= 0) continue;
-         if(arrSrc[i] <= 0 || arrSrc[i + 1] <= 0) continue;
+         color candleClr = isBull ? RATT_CANDLE_BULL : RATT_CANDLE_BEAR;
 
-         datetime t1 = arrT[i];
-         datetime t2 = arrT[i + 1];
+         // Body: OBJ_RECTANGLE da Open a Close
+         string bodyName = "RATT_TCOL_B_" + IntegerToString(i);
+         double bodyTop = MathMax(openBuf[i], closeBuf[i]);
+         double bodyBot = MathMin(openBuf[i], closeBuf[i]);
+         if(bodyTop == bodyBot) bodyTop = bodyBot + _Point;
+         datetime t2 = t1 + perSec;
 
-         string prefix = "RATT_OVL_" + IntegerToString(i) + "_";
+         if(ObjectFind(0, bodyName) < 0)
+         {
+            ObjectCreate(0, bodyName, OBJ_RECTANGLE, 0, t1, bodyTop, t2, bodyBot);
+            ObjectSetInteger(0, bodyName, OBJPROP_FILL, true);
+            ObjectSetInteger(0, bodyName, OBJPROP_BACK, false);
+            ObjectSetInteger(0, bodyName, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, bodyName, OBJPROP_HIDDEN, true);
+         }
+         ObjectSetInteger(0, bodyName, OBJPROP_TIME, 0, t1);
+         ObjectSetDouble(0, bodyName, OBJPROP_PRICE, 0, bodyTop);
+         ObjectSetInteger(0, bodyName, OBJPROP_TIME, 1, t2);
+         ObjectSetDouble(0, bodyName, OBJPROP_PRICE, 1, bodyBot);
+         ObjectSetInteger(0, bodyName, OBJPROP_COLOR, candleClr);
 
-         bool isBull = (arrSrc[i] > arrTrail[i]);
+         // Wick: OBJ_TREND da High a Low (linea verticale sottile)
+         string wickName = "RATT_TCOL_W_" + IntegerToString(i);
+         datetime tMid = t1 + perSec / 2;
+
+         if(ObjectFind(0, wickName) < 0)
+         {
+            ObjectCreate(0, wickName, OBJ_TREND, 0, tMid, highBuf[i], tMid, lowBuf[i]);
+            ObjectSetInteger(0, wickName, OBJPROP_RAY_LEFT, false);
+            ObjectSetInteger(0, wickName, OBJPROP_RAY_RIGHT, false);
+            ObjectSetInteger(0, wickName, OBJPROP_BACK, false);
+            ObjectSetInteger(0, wickName, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, wickName, OBJPROP_HIDDEN, true);
+            ObjectSetInteger(0, wickName, OBJPROP_STYLE, STYLE_SOLID);
+            ObjectSetInteger(0, wickName, OBJPROP_WIDTH, 1);
+         }
+         ObjectSetInteger(0, wickName, OBJPROP_TIME, 0, tMid);
+         ObjectSetDouble(0, wickName, OBJPROP_PRICE, 0, highBuf[i]);
+         ObjectSetInteger(0, wickName, OBJPROP_TIME, 1, tMid);
+         ObjectSetDouble(0, wickName, OBJPROP_PRICE, 1, lowBuf[i]);
+         ObjectSetInteger(0, wickName, OBJPROP_COLOR, candleClr);
+      }
+
+      // === TRAIL LINE ===
+      if(ShowChannelOverlay && i < depth - 1 && arrTrail[i + 1] > 0)
+      {
+         datetime t2trail = arrT[i + 1];
+         if(t2trail == 0) continue;
+
+         string trailName = "RATT_OVL_" + IntegerToString(i) + "_T";
          color trailClr = isBull ? RATT_CHAN_TRAIL_BULL : RATT_CHAN_TRAIL_BEAR;
-         DrawOverlayLineDynColor(prefix + "T", t2, arrTrail[i + 1], t1, arrTrail[i],
-                                 trailClr, RATT_CHAN_STYLE, RATT_CHAN_WIDTH);
 
-         // When trend rectangles are foreground (BACK=false), trail must also be
-         // foreground so it renders on top of filled rectangles
-         if(ColorCandlesByTrend)
-            ObjectSetInteger(0, prefix + "T", OBJPROP_BACK, false);
+         if(ObjectFind(0, trailName) < 0)
+         {
+            ObjectCreate(0, trailName, OBJ_TREND, 0, t2trail, arrTrail[i + 1], t1, arrTrail[i]);
+            ObjectSetInteger(0, trailName, OBJPROP_RAY_LEFT, false);
+            ObjectSetInteger(0, trailName, OBJPROP_RAY_RIGHT, false);
+            ObjectSetInteger(0, trailName, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, trailName, OBJPROP_HIDDEN, true);
+            ObjectSetInteger(0, trailName, OBJPROP_BACK, false);
+            ObjectSetInteger(0, trailName, OBJPROP_STYLE, RATT_CHAN_STYLE);
+            ObjectSetInteger(0, trailName, OBJPROP_WIDTH, RATT_CHAN_WIDTH);
+         }
+         ObjectSetInteger(0, trailName, OBJPROP_TIME, 0, t2trail);
+         ObjectSetDouble(0, trailName, OBJPROP_PRICE, 0, arrTrail[i + 1]);
+         ObjectSetInteger(0, trailName, OBJPROP_TIME, 1, t1);
+         ObjectSetDouble(0, trailName, OBJPROP_PRICE, 1, arrTrail[i]);
+         ObjectSetInteger(0, trailName, OBJPROP_COLOR, trailClr);
       }
    }
+
+   // Entry level per l'ultimo segnale trovato
+   if(lastEntryPrice > 0)
+   {
+      string elName = "RATT_ENTRY_LEVEL";
+      if(ObjectFind(0, elName) >= 0) ObjectDelete(0, elName);
+      ObjectCreate(0, elName, OBJ_HLINE, 0, 0, lastEntryPrice);
+      ObjectSetInteger(0, elName, OBJPROP_COLOR, RATT_ENTRY_LEVEL_CLR);
+      ObjectSetInteger(0, elName, OBJPROP_STYLE, STYLE_DASH);
+      ObjectSetInteger(0, elName, OBJPROP_WIDTH, 1);
+      ObjectSetInteger(0, elName, OBJPROP_BACK, true);
+      ObjectSetInteger(0, elName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, elName, OBJPROP_HIDDEN, true);
+   }
+
+   AdLogI(LOG_CAT_UI, StringFormat("DrawChannelOverlay: %d signals over %d bars (ATR Wilder)", signalCount, depth));
 }
 
 //+------------------------------------------------------------------+
-//| UpdateChannelLiveEdge — Aggiorna SOLO il bordo live (bar[0])     |
-//|                                                                  |
-//| Funzione LEGGERA chiamata ogni 500ms per tenere aggiornato       |
-//| il segmento index=0 del canale, che collega bar[1] a bar[0].    |
-//| Aggiorna le coordinate del punto destro (bar[0]) del trail stop  |
-//| con colore dinamico bull/bear (teal/coral).                      |
+//| UpdateChannelLiveEdge — Aggiorna bordo live bar[0] (leggero)     |
 //+------------------------------------------------------------------+
 void UpdateChannelLiveEdge()
 {
    if(!ShowChannelOverlay && !ColorCandlesByTrend) return;
    if(OverlayDepth <= 0) return;
 
-   int atrPeriod = (g_utb_atrPeriod > 0) ? g_utb_atrPeriod : 14;
-   int totalBars = iBars(_Symbol, PERIOD_CURRENT);
-   if(totalBars < atrPeriod + 5) return;
-
-   double atrBuf[];
-   ArraySetAsSeries(atrBuf, true);
-   if(CopyBuffer(g_utb_atrHandle, 0, 0, 3, atrBuf) < 3) return;
-
-   double closeBuf[];
-   ArraySetAsSeries(closeBuf, true);
-   if(CopyClose(_Symbol, PERIOD_CURRENT, 0, 3, closeBuf) < 3) return;
-
-   // Bar[0]: close live (approssimazione — engine non ha ancora calcolato)
-   // Bar[1]: sorgente adattiva confermata dall'engine
-   double src0 = closeBuf[0];
-   double src1 = (g_utb_lastSrc > 0) ? g_utb_lastSrc : closeBuf[1];
+   double src0 = iClose(_Symbol, PERIOD_CURRENT, 0);
+   double src1 = (g_utb_lastSrc > 0) ? g_utb_lastSrc : iClose(_Symbol, PERIOD_CURRENT, 1);
    datetime t0 = iTime(_Symbol, PERIOD_CURRENT, 0);
 
-   // Aggiorna trail stop — solo il punto 1 (bar[0], estremo destro)
+   // Aggiorna trail stop bar[0]
    string nameT = "RATT_OVL_0_T";
-   bool isBull = false;
-
    if(ShowChannelOverlay && ObjectFind(0, nameT) >= 0)
    {
       double trail1 = ObjectGetDouble(0, nameT, OBJPROP_PRICE, 0);
-      if(trail1 > 0)
+      if(trail1 > 0 && g_utb_atrWilder > 0)
       {
-         double atr0 = atrBuf[0];
-         double nLoss = g_utb_keyValue * atr0;
+         double nLoss = g_utb_keyValue * g_utb_atrWilder;
          double trail0;
 
          if(src0 > trail1 && src1 > trail1)
@@ -430,51 +535,63 @@ void UpdateChannelLiveEdge()
          ObjectSetInteger(0, nameT, OBJPROP_TIME, 1, t0);
          ObjectSetDouble(0, nameT, OBJPROP_PRICE, 1, trail0);
 
-         isBull = (src0 > trail0);
-         color trailClr = isBull ? RATT_CHAN_TRAIL_BULL : RATT_CHAN_TRAIL_BEAR;
-         ObjectSetInteger(0, nameT, OBJPROP_COLOR, trailClr);
-
-         // Trail foreground when trend rects are foreground (correct layering)
-         if(ColorCandlesByTrend)
-            ObjectSetInteger(0, nameT, OBJPROP_BACK, false);
+         bool isBull = (src0 > trail0);
+         ObjectSetInteger(0, nameT, OBJPROP_COLOR, isBull ? RATT_CHAN_TRAIL_BULL : RATT_CHAN_TRAIL_BEAR);
       }
    }
 
-   // Live candle coloring (bar[0]) gestito dall'indicatore UTBotAdaptive
-   // embedded — vedi Rattapignola.mq5 OnInit.
-}
-
-//+------------------------------------------------------------------+
-//| DrawOverlayLineDynColor — Segmento con colore DINAMICO           |
-//|                                                                  |
-//| Usata per il Trail stop che cambia colore ogni barra:            |
-//|   bull color = price above trail (bullish)                       |
-//|   bear color = price below trail (bearish)                       |
-//+------------------------------------------------------------------+
-void DrawOverlayLineDynColor(string name, datetime t1, double p1, datetime t2, double p2,
-                             color clr, ENUM_LINE_STYLE style, int width)
-{
-   if(ObjectFind(0, name) < 0)
+   // Aggiorna candela bar[0]
+   if(ColorCandlesByTrend)
    {
-      ObjectCreate(0, name, OBJ_TREND, 0, t1, p1, t2, p2);
-      ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
-      ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
-      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-      // Con ColorCandlesByTrend i rettangoli trend hanno BACK=false, quindi
-      // il trail deve passare in foreground per restare visibile sopra di essi.
-      bool trailFront = ColorCandlesByTrend;
-      ObjectSetInteger(0, name, OBJPROP_BACK, trailFront ? false : true);
-      ObjectSetInteger(0, name, OBJPROP_ZORDER, trailFront ? 350 : 50);
-      ObjectSetInteger(0, name, OBJPROP_STYLE, style);
-      ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
-   }
+      double o0 = iOpen(_Symbol, PERIOD_CURRENT, 0);
+      double h0 = iHigh(_Symbol, PERIOD_CURRENT, 0);
+      double l0 = iLow(_Symbol, PERIOD_CURRENT, 0);
+      double c0 = src0;
 
-   ObjectSetInteger(0, name, OBJPROP_TIME, 0, t1);
-   ObjectSetDouble(0, name, OBJPROP_PRICE, 0, p1);
-   ObjectSetInteger(0, name, OBJPROP_TIME, 1, t2);
-   ObjectSetDouble(0, name, OBJPROP_PRICE, 1, p2);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);  // Colore aggiornato ogni barra
+      bool isBull = (g_utb_lastSrc > g_utb_lastTrail);
+      color candleClr = isBull ? RATT_CANDLE_BULL : RATT_CANDLE_BEAR;
+
+      int perSec = PeriodSeconds();
+      datetime t2 = t0 + perSec;
+      datetime tMid = t0 + perSec / 2;
+
+      string bodyName = "RATT_TCOL_B_0";
+      double bodyTop = MathMax(o0, c0);
+      double bodyBot = MathMin(o0, c0);
+      if(bodyTop == bodyBot) bodyTop = bodyBot + _Point;
+
+      if(ObjectFind(0, bodyName) < 0)
+      {
+         ObjectCreate(0, bodyName, OBJ_RECTANGLE, 0, t0, bodyTop, t2, bodyBot);
+         ObjectSetInteger(0, bodyName, OBJPROP_FILL, true);
+         ObjectSetInteger(0, bodyName, OBJPROP_BACK, false);
+         ObjectSetInteger(0, bodyName, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, bodyName, OBJPROP_HIDDEN, true);
+      }
+      ObjectSetInteger(0, bodyName, OBJPROP_TIME, 0, t0);
+      ObjectSetDouble(0, bodyName, OBJPROP_PRICE, 0, bodyTop);
+      ObjectSetInteger(0, bodyName, OBJPROP_TIME, 1, t2);
+      ObjectSetDouble(0, bodyName, OBJPROP_PRICE, 1, bodyBot);
+      ObjectSetInteger(0, bodyName, OBJPROP_COLOR, candleClr);
+
+      string wickName = "RATT_TCOL_W_0";
+      if(ObjectFind(0, wickName) < 0)
+      {
+         ObjectCreate(0, wickName, OBJ_TREND, 0, tMid, h0, tMid, l0);
+         ObjectSetInteger(0, wickName, OBJPROP_RAY_LEFT, false);
+         ObjectSetInteger(0, wickName, OBJPROP_RAY_RIGHT, false);
+         ObjectSetInteger(0, wickName, OBJPROP_BACK, false);
+         ObjectSetInteger(0, wickName, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, wickName, OBJPROP_HIDDEN, true);
+         ObjectSetInteger(0, wickName, OBJPROP_STYLE, STYLE_SOLID);
+         ObjectSetInteger(0, wickName, OBJPROP_WIDTH, 1);
+      }
+      ObjectSetInteger(0, wickName, OBJPROP_TIME, 0, tMid);
+      ObjectSetDouble(0, wickName, OBJPROP_PRICE, 0, h0);
+      ObjectSetInteger(0, wickName, OBJPROP_TIME, 1, tMid);
+      ObjectSetDouble(0, wickName, OBJPROP_PRICE, 1, l0);
+      ObjectSetInteger(0, wickName, OBJPROP_COLOR, candleClr);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -483,7 +600,6 @@ void DrawOverlayLineDynColor(string name, datetime t1, double p1, datetime t2, d
 void DrawTPLine(int cycleID, double tpPrice, bool isBuy)
 {
    if(!ShowTPTargetLines) return;
-
    string lineName = StringFormat("RATT_TP_LINE_%d", cycleID);
    color tpClr = isBuy ? RATT_TP_DOT_BUY : RATT_TP_DOT_SELL;
    CreateHLine(lineName, tpPrice, tpClr, RATT_TP_LINE_WIDTH, STYLE_DASH);
@@ -498,17 +614,15 @@ void DrawTPLine(int cycleID, double tpPrice, bool isBuy)
 void DrawTPDot(int cycleID, double tpPrice, datetime signalTime, bool isBuy)
 {
    if(!ShowTPTargetLines) return;
-
    string name = StringFormat("RATT_TP_DOT_%d", cycleID);
    if(ObjectFind(0, name) < 0)
       ObjectCreate(0, name, OBJ_ARROW, 0, signalTime, tpPrice);
-
-   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);  // Cerchio pieno
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);
    ObjectSetInteger(0, name, OBJPROP_COLOR, isBuy ? RATT_TP_DOT_BUY : RATT_TP_DOT_SELL);
    ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-   ObjectSetInteger(0, name, OBJPROP_BACK, false);     // Davanti alle candele
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
 }
 
 //+------------------------------------------------------------------+
@@ -519,18 +633,15 @@ void DrawTPAsterisk(double tpPrice, datetime signalTime, bool isBuy)
    string name = StringFormat("RATT_TP_STAR_%s_%s",
       isBuy ? "B" : "S",
       TimeToString(signalTime, TIME_DATE|TIME_MINUTES));
-
-   if(ObjectFind(0, name) >= 0) return;  // Già disegnato per questo segnale
-
+   if(ObjectFind(0, name) >= 0) return;
    ObjectCreate(0, name, OBJ_ARROW, 0, signalTime, tpPrice);
-   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 171);  // Asterisco
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clrYellow); // Giallo fisso
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 171);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clrYellow);
    ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
    ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_CENTER);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
    ObjectSetInteger(0, name, OBJPROP_BACK, false);
-
    ObjectSetString(0, name, OBJPROP_TOOLTIP,
       StringFormat("TP Target %s @ %s [%s]",
          isBuy ? "BUY" : "SELL",
@@ -546,8 +657,7 @@ void DrawTPHitMarker(int cycleID, double tpPrice, datetime hitTime)
    string name = StringFormat("RATT_TP_HIT_%d", cycleID);
    if(ObjectFind(0, name) < 0)
       ObjectCreate(0, name, OBJ_ARROW, 0, hitTime, tpPrice);
-
-   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 169);  // Stella
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 169);
    ObjectSetInteger(0, name, OBJPROP_COLOR, RATT_TP_HIT_CLR);
    ObjectSetInteger(0, name, OBJPROP_WIDTH, 3);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
@@ -561,19 +671,21 @@ void RemoveTPLine(int cycleID)
 {
    string lineName = StringFormat("RATT_TP_LINE_%d", cycleID);
    if(ObjectFind(0, lineName) >= 0) ObjectDelete(0, lineName);
-
    string dotName = StringFormat("RATT_TP_DOT_%d", cycleID);
    if(ObjectFind(0, dotName) >= 0) ObjectDelete(0, dotName);
 }
 
 //+------------------------------------------------------------------+
-//| CleanupOverlay — Rimuove TUTTI gli oggetti overlay + canvas      |
+//| CleanupOverlay — Rimuove TUTTI gli oggetti overlay               |
 //+------------------------------------------------------------------+
 void CleanupOverlay()
 {
-   ObjectsDeleteAll(0, "RATT_OVL_");     // Segmenti trail
-   ObjectsDeleteAll(0, "RATT_TP_");      // Linee e dot TP
-   ObjectsDeleteAll(0, "RATT_TRIG_VL_"); // VLine trigger
-   ObjectsDeleteAll(0, "RATT_TCOL_");    // Candele colorate (legacy v1.2 — pulizia migrazione)
+   ObjectsDeleteAll(0, "RATT_OVL_");      // Trail segments
+   ObjectsDeleteAll(0, "RATT_TCOL_");     // Trend candle body + wick
+   ObjectsDeleteAll(0, "RATT_TP_");       // TP markers
+   ObjectsDeleteAll(0, "RATT_TRIG_VL_");  // VLine trigger (legacy)
+   ObjectsDeleteAll(0, "RATT_TRIG_CDL_"); // Trigger candle highlight
+   ObjectsDeleteAll(0, "RATT_HSIG_");     // Historical arrows
+   ObjectDelete(0, "RATT_ENTRY_LEVEL");   // Entry level HLINE
    g_ovlLastDepth = 0;
 }

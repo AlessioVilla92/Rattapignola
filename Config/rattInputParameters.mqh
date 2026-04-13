@@ -133,7 +133,7 @@ input bool           ShowChannelOverlay     = true;          // ✅ Show Channel
 input bool           ShowSignalArrows       = true;          // ✅ Show Signal Arrows
 input bool           ShowTPTargetLines      = true;          // ✅ Show TP Target Lines
 input int            OverlayDepth           = 500;           // 📊 Channel Overlay Depth (bars, 0=arrows only)
-input bool           ColorCandlesByTrend    = true;          // 🎨 Color Candles by Trend (UTBotAdaptive style)
+input bool           ColorCandlesByTrend    = true;          // 🎨 Color Candles by Trend (off=trail/frecce restano, candele MT5 native)
 
 //+------------------------------------------------------------------+
 //| 7. ADVANCED                                                      |

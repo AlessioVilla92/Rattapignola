@@ -103,8 +103,8 @@
 #define RATT_ARROW_SELL_1      C'255,138,101'  // ER 0.35-0.59 — MODERATO (arancio)
 #define RATT_ARROW_SELL_2      C'255,193,7'    // ER 0.15-0.34 — DEBOLE (giallo)
 #define RATT_ARROW_SELL_3      C'120,120,120'  // ER < 0.15 — RANGING (grigio)
-#define RATT_ARROW_SIZE        2               // Arrow width (UTBotAdaptive)
-#define RATT_ARROW_OFFSET      0.5             // Offset multiplier x ATR (UTBotAdaptive)
+#define RATT_ARROW_SIZE        4               // Arrow width (UTBotAdaptive)
+#define RATT_ARROW_OFFSET      1.2             // Offset multiplier x ATR (UTBotAdaptive)
 
 //+------------------------------------------------------------------+
 //| ENTRY/EXIT                                                       |
@@ -175,6 +175,15 @@
 
 //+------------------------------------------------------------------+
 //| ApplyChartTheme() — Applica palette Notti Estive al chart        |
+//|                                                                  |
+//| v1.3: l'EA disegna direttamente candele colorate per trend con   |
+//| OBJ_RECTANGLE (body) + OBJ_TREND (wick). Per farlo, nascondiamo  |
+//| le candele native MT5 impostando body/wick/line = colore sfondo. |
+//| CHART_FOREGROUND=false mette le candele native SOTTO gli oggetti  |
+//| chart, cosi' i nostri rettangoli trend appaiono sopra.           |
+//|                                                                  |
+//| Quando ColorCandlesByTrend=false, lasciamo le candele native      |
+//| visibili con colori statici (senza rendering trend dall'EA).      |
 //+------------------------------------------------------------------+
 void ApplyChartTheme()
 {
@@ -184,20 +193,23 @@ void ApplyChartTheme()
 
    if(ColorCandlesByTrend)
    {
-      // Hide entire native candle (body fill + wick/outline)
-      // OBJ_RECTANGLE overlay (HIGH→LOW, BACK=false) provides full trend colors
+      // Nascondi candele native: body + wick + doji line = colore sfondo
       ChartSetInteger(0, CHART_COLOR_CANDLE_BULL,  RATT_BG_DEEP);
       ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR,  RATT_BG_DEEP);
       ChartSetInteger(0, CHART_COLOR_CHART_UP,     RATT_BG_DEEP);
       ChartSetInteger(0, CHART_COLOR_CHART_DOWN,   RATT_BG_DEEP);
+      ChartSetInteger(0, CHART_COLOR_CHART_LINE,   RATT_BG_DEEP);
+      ChartSetInteger(0, CHART_FOREGROUND,          false);
    }
    else
    {
+      // Candele native visibili con colori statici
       ChartSetInteger(0, CHART_COLOR_CANDLE_BULL,  RATT_CANDLE_BULL);
       ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR,  RATT_CANDLE_BEAR);
       ChartSetInteger(0, CHART_COLOR_CHART_UP,     RATT_CANDLE_BULL);
       ChartSetInteger(0, CHART_COLOR_CHART_DOWN,   RATT_CANDLE_BEAR);
    }
+
    ChartSetInteger(0, CHART_COLOR_ASK,          RATT_BUY);
    ChartSetInteger(0, CHART_COLOR_BID,          RATT_SELL);
    ChartSetInteger(0, CHART_SHOW_GRID,          false);

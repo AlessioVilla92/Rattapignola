@@ -104,6 +104,10 @@ int    g_utb_jma_histMax = 200; // Max history buffer
 double g_utb_kama_prev = 0;
 bool   g_utb_kama_init = false;
 
+// ATR Wilder (manual, matches UTBotAdaptive.mq5 line 1283 exactly)
+double g_utb_atrWilder = 0.0;
+bool   g_utb_atrInit   = false;
+
 //+------------------------------------------------------------------+
 //| UTBApplyPreset — Map Period() to preset index                    |
 //+------------------------------------------------------------------+
@@ -254,9 +258,9 @@ void UTBWarmupJMA(int bars = 200)
       if(copied < 10) return;
    }
 
-   // UTBCalcJMA legge solo close[1]; usiamo un buffer 3-elementi as-series.
+   // UTBCalcJMA legge solo close[1] (accesso diretto, non serve as-series).
+   // Array statico: MQL5 non permette ArraySetAsSeries su buffer fissi.
    double tmp[3];
-   ArraySetAsSeries(tmp, true);
    tmp[0] = 0; tmp[2] = 0;
 
    for(int i = 0; i < copied; i++)
@@ -540,14 +544,197 @@ double UTBCalcER(const double &close[], int count, double src, double src_prev, 
 }
 
 //+------------------------------------------------------------------+
+//| UTBCalcATRWilder — ATR Wilder manuale per bar[1]                 |
+//|                                                                  |
+//| Formula identica a UTBotAdaptive.mq5 riga 1280-1283:             |
+//|   ATR[i] = (ATR[i-1] * (period-1) + TR) / period                |
+//| Mantiene stato in g_utb_atrWilder (persistente tra tick).        |
+//+------------------------------------------------------------------+
+double UTBCalcATRWilder()
+{
+   int period = g_utb_atrPeriod;
+
+   if(!g_utb_atrInit)
+   {
+      double highBuf[], lowBuf[], closeBuf[];
+      ArraySetAsSeries(highBuf, true);
+      ArraySetAsSeries(lowBuf, true);
+      ArraySetAsSeries(closeBuf, true);
+
+      int needed = period + 2;
+      if(CopyHigh(_Symbol, PERIOD_CURRENT, 1, needed, highBuf) < needed) return 0;
+      if(CopyLow(_Symbol, PERIOD_CURRENT, 1, needed, lowBuf) < needed) return 0;
+      if(CopyClose(_Symbol, PERIOD_CURRENT, 1, needed, closeBuf) < needed) return 0;
+
+      double sum = 0;
+      for(int k = 0; k < period; k++)
+      {
+         int idx = period - k;
+         double trueHigh = MathMax(highBuf[idx], closeBuf[idx + 1]);
+         double trueLow  = MathMin(lowBuf[idx], closeBuf[idx + 1]);
+         sum += (trueHigh - trueLow);
+      }
+      g_utb_atrWilder = sum / period;
+      g_utb_atrInit = true;
+   }
+
+   double h1 = iHigh(_Symbol, PERIOD_CURRENT, 1);
+   double l1 = iLow(_Symbol, PERIOD_CURRENT, 1);
+   double c2 = iClose(_Symbol, PERIOD_CURRENT, 2);
+   double tr = MathMax(h1, c2) - MathMin(l1, c2);
+
+   g_utb_atrWilder = (g_utb_atrWilder * (period - 1) + tr) / period;
+   return g_utb_atrWilder;
+}
+
+//+------------------------------------------------------------------+
+//| UTBWarmupATRWilder — Scalda ATR Wilder su N barre storiche       |
+//|                                                                  |
+//| 1. SMA dei primi `period` True Range come seed                   |
+//| 2. Wilder's smoothing per tutte le barre successive              |
+//+------------------------------------------------------------------+
+void UTBWarmupATRWilder(int bars = 500)
+{
+   int period = g_utb_atrPeriod;
+   int totalBars = iBars(_Symbol, PERIOD_CURRENT);
+   if(bars > totalBars - period - 2) bars = totalBars - period - 2;
+   if(bars < period + 1) return;
+
+   double highBuf[], lowBuf[], closeBuf[];
+   ArraySetAsSeries(highBuf, false);
+   ArraySetAsSeries(lowBuf, false);
+   ArraySetAsSeries(closeBuf, false);
+
+   if(CopyHigh(_Symbol, PERIOD_CURRENT, 1, bars, highBuf) < bars) return;
+   if(CopyLow(_Symbol, PERIOD_CURRENT, 1, bars, lowBuf) < bars) return;
+   if(CopyClose(_Symbol, PERIOD_CURRENT, 1, bars, closeBuf) < bars) return;
+
+   double sum = 0;
+   for(int k = 1; k <= period; k++)
+   {
+      double tr_k = MathMax(highBuf[k], closeBuf[k - 1]) - MathMin(lowBuf[k], closeBuf[k - 1]);
+      sum += tr_k;
+   }
+   g_utb_atrWilder = sum / period;
+
+   for(int i = period + 1; i < bars; i++)
+   {
+      double tr_i = MathMax(highBuf[i], closeBuf[i - 1]) - MathMin(lowBuf[i], closeBuf[i - 1]);
+      g_utb_atrWilder = (g_utb_atrWilder * (period - 1) + tr_i) / period;
+   }
+
+   g_utb_atrInit = true;
+   AdLogI(LOG_CAT_UTB, StringFormat("ATR Wilder warmup: %d bars | ATR=%.5f (%.2f pip)",
+          bars, g_utb_atrWilder, PointsToPips(g_utb_atrWilder)));
+}
+
+//+------------------------------------------------------------------+
+//| UTBWarmupEngine — Scalda JMA + ATR Wilder + Trail su storia      |
+//|                                                                  |
+//| Processa `bars` barre storiche in ordine cronologico, calcolando |
+//| sorgente adattiva e trailing stop per allineare lo stato engine   |
+//| con quello che l'indicatore avrebbe calcolato sulla stessa storia.|
+//| Al termine, g_utb_lastTrail e g_utb_lastSrc contengono i valori  |
+//| corretti — niente piu' "trail=0 guess bullish".                  |
+//+------------------------------------------------------------------+
+void UTBWarmupEngine(int bars = 500)
+{
+   if(bars < 50) bars = 50;
+   int totalBars = iBars(_Symbol, PERIOD_CURRENT);
+   if(totalBars < bars + 5) bars = totalBars - 5;
+   if(bars < 50) return;
+
+   double closes[];
+   ArraySetAsSeries(closes, false);
+   int copied = CopyClose(_Symbol, PERIOD_CURRENT, 1, bars, closes);
+   if(copied < 50) return;
+   bars = copied;
+
+   double tmp[3];
+   ArraySetAsSeries(tmp, true);
+   tmp[0] = 0; tmp[2] = 0;
+
+   double trail = 0, src = 0, src_prev = 0;
+
+   for(int i = 0; i < bars; i++)
+   {
+      double close_i = closes[i];
+      tmp[1] = close_i;
+
+      double curSrc = close_i;
+      switch(InpSrcType)
+      {
+         case UTB_SRC_CLOSE:
+            curSrc = close_i;
+            break;
+         case UTB_SRC_JMA:
+            curSrc = UTBCalcJMA(tmp, 3);
+            break;
+         case UTB_SRC_KAMA:
+         {
+            if(!g_utb_kama_init)
+            {
+               g_utb_kama_prev = close_i;
+               g_utb_kama_init = true;
+               curSrc = close_i;
+            }
+            else
+            {
+               double fc = 2.0 / (g_utb_kamaFast + 1.0);
+               double sc = 2.0 / (g_utb_kamaSlow + 1.0);
+               double er_k = (g_utb_atrWilder > 0)
+                  ? MathMin(1.0, MathAbs(close_i - g_utb_kama_prev) / g_utb_atrWilder)
+                  : 0.0;
+               double smooth = MathPow(er_k * (fc - sc) + sc, 2.0);
+               curSrc = g_utb_kama_prev + smooth * (close_i - g_utb_kama_prev);
+               g_utb_kama_prev = curSrc;
+            }
+            break;
+         }
+         case UTB_SRC_HMA:
+            curSrc = close_i;
+            break;
+      }
+
+      src_prev = src;
+      src = curSrc;
+
+      double nLoss = g_utb_keyValue * g_utb_atrWilder;
+      if(nLoss <= 0) continue;
+
+      if(trail == 0)
+      {
+         trail = src - nLoss;
+         continue;
+      }
+
+      double trail_prev = trail;
+      if(src > trail_prev && src_prev > trail_prev)
+         trail = MathMax(trail_prev, src - nLoss);
+      else if(src < trail_prev && src_prev < trail_prev)
+         trail = MathMin(trail_prev, src + nLoss);
+      else if(src > trail_prev)
+         trail = src - nLoss;
+      else
+         trail = src + nLoss;
+   }
+
+   g_utb_lastTrail = trail;
+   g_utb_lastSrc   = src;
+
+   AdLogI(LOG_CAT_UTB, StringFormat("WarmupEngine: %d bars | Trail=%.5f | Src=%.5f | Side=%s",
+          bars, trail, src, (src > trail) ? "BULL" : "BEAR"));
+}
+
+//+------------------------------------------------------------------+
 //| EngineInit — Contract function 1/3                               |
 //|                                                                  |
 //|  1. Apply TF preset or manual params                             |
-//|  2. Create ATR handle                                            |
+//|  2. Create ATR handle (kept for legacy/future use)               |
 //|  3. Pre-calculate JMA constants (if JMA source)                  |
-//|  4. Create SqueezeMomentum handle (if enabled)                   |
-//|  5. Set pending expiry from preset                               |
-//|  6. Reset state                                                  |
+//|  4. Warmup ATR Wilder + Engine (trail + source)                  |
+//|  5. Create SqueezeMomentum handle (if enabled)                   |
+//|  6. Reset barTime only (trail/src set by warmup)                 |
 //+------------------------------------------------------------------+
 bool EngineInit()
 {
@@ -584,18 +771,23 @@ bool EngineInit()
       return false;
    }
 
-   //--- 3. Pre-calculate JMA constants + warmup historical state ---
+   //--- 3. Pre-calculate JMA constants ---
    if(InpSrcType == UTB_SRC_JMA)
    {
       UTBInitJMAConstants();
       UTBResetJMAState();
       AdLogI(LOG_CAT_UTB, StringFormat("JMA constants: PR=%.3f len1=%.3f pow1=%.3f bet=%.4f beta=%.4f",
              g_utb_jma_PR, g_utb_jma_len1, g_utb_jma_pow1, g_utb_jma_bet, g_utb_jma_beta));
-      // Warmup: alimenta lo stato JMA con ~200 barre storiche, cosi' i
-      // primi segnali post-init/post-recovery sono coerenti col pre-crash
-      // (la JMA richiede ~100+ barre per convergere).
-      UTBWarmupJMA(200);
    }
+
+   //--- 3b. Warmup ATR Wilder (identico all'indicatore riga 1283) ---
+   UTBWarmupATRWilder(500);
+
+   //--- 3c. Warmup engine completo: sorgente + trail ---
+   // Questo sostituisce il vecchio UTBWarmupJMA(200) e aggiunge il calcolo
+   // trail stop durante il warmup. Al termine g_utb_lastTrail e g_utb_lastSrc
+   // contengono i valori storici corretti — niente piu' "trail=0 guess bullish".
+   UTBWarmupEngine(500);
 
    //--- 4. Create SqueezeMomentum handle (if enabled) ---
    if(InpUseSqzExit)
@@ -614,11 +806,11 @@ bool EngineInit()
    //--- 5. Pending expiry already set by UTBApplyPreset/UTBApplyManual ---
 
    //--- 6. Reset state ---
-   g_utb_lastTrail   = 0;
-   g_utb_lastSrc     = 0;
+   // NON azzerare g_utb_lastTrail/g_utb_lastSrc — il warmup li ha settati
+   // ai valori storici corretti. Azzerandoli qui si causerebbe il BUG 2
+   // (trail=0 → engine indovina il lato bull → divergenza dall'indicatore).
+   // NON azzerare g_utb_kama_prev/init — il warmup engine li ha scaldati.
    g_utb_lastBarTime = 0;
-   g_utb_kama_prev   = 0;
-   g_utb_kama_init   = false;
    g_lastSignal.Reset();
 
    //--- Log configuration ---
@@ -670,6 +862,8 @@ void EngineDeinit()
    g_utb_lastBarTime = 0;
    g_utb_kama_prev   = 0;
    g_utb_kama_init   = false;
+   g_utb_atrWilder   = 0;
+   g_utb_atrInit     = false;
 
    if(InpSrcType == UTB_SRC_JMA)
       UTBResetJMAState();
@@ -700,15 +894,14 @@ bool EngineCalculate(EngineSignal &sig)
    if(totalBars < g_utb_atrPeriod + 10) return false;
 
    // ================================================================
-   // STEP 1: Get ATR from iATR handle (bar[1])
+   // STEP 1: ATR Wilder per bar[1] (identico a UTBotAdaptive.mq5 riga 1283)
    // ================================================================
-   double atrBuf[1];
-   if(CopyBuffer(g_utb_atrHandle, 0, 1, 1, atrBuf) < 1)
+   double atr = UTBCalcATRWilder();
+   if(atr <= 0)
    {
-      AdLogD(LOG_CAT_UTB, "ATR data not ready");
+      AdLogD(LOG_CAT_UTB, "ATR Wilder not ready");
       return false;
    }
-   double atr   = atrBuf[0];
    double nLoss = g_utb_keyValue * atr;
 
    // ================================================================
