@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep:*)",
+      "Bash(mql5.exe /compile Rattapignola.mq5)",
+      "Bash(grep -c \"#property strict\" \"/c/Users/Admin/Documents/GitHub/Rattapignola\"/**/*.mq5 \"/c/Users/Admin/Documents/GitHub/Rattapignola\"/**/*.mqh)",
+      "Bash(grep -v \":0$\")",
+      "Bash(find \"/c/Users/Admin/Documents/GitHub/Rattapignola\" -name \"*.mqh\" -exec grep -l \"enum ENUM_\\\\|struct \" {} \\\\;)",
+      "Bash(python3 -c \"print\\('690 = 345 + 345'\\); print\\('x + 345 rightX calculation:'\\); print\\('leftX=x, rightX=x+345'\\); print\\('gap should be:', 4\\); print\\('RIGHT START: x + 345 + 4 = x + 349'\\)\")",
+      "Bash(echo \"exit: $?\")",
+      "Bash(curl -s -L \"https://www.mql5.com/en/docs/chart_operations/chartsetinteger\")",
+      "Bash(curl -s -L \"https://www.mql5.com/en/docs/constants/objectconstants/enum_object/obj_rectangle\")",
+      "Bash(curl -s -L \"https://www.mql5.com/en/docs/customind/indicators_buffers/draw_color_candles\")",
+      "Bash(curl -s -L \"https://www.mql5.com/en/docs/chart_operations/chartindicatoradd\")"
+    ]
+  }
+}

@@ -74,24 +74,26 @@
 #property indicator_style1  STYLE_SOLID
 #property indicator_width1  2
 
-// --- Plot 1: Freccia BUY — DRAW_COLOR_ARROW, 4 livelli ER ---
+// --- Plot 1: Freccia BUY — DRAW_COLOR_ARROW, 5 livelli ER + bloccato ---
 // Indice 0: verde pieno C'76,175,80'    ER>=0.60 — segnale affidabile
 // Indice 1: verde chiar C'139,195,74'   ER 0.35-0.59 — moderato
 // Indice 2: giallo      C'255,193,7'    ER 0.15-0.34 — debole
 // Indice 3: grigio      C'120,120,120'  ER<0.15 — ranging, massima cautela
+// Indice 4: grigio scuro C'70,70,70'    BLOCCATO da filtri Fase 1
 #property indicator_label2  "Buy"
 #property indicator_type2   DRAW_COLOR_ARROW
-#property indicator_color2  C'76,175,80', C'139,195,74', C'255,193,7', C'120,120,120'
+#property indicator_color2  C'76,175,80', C'139,195,74', C'255,193,7', C'120,120,120', C'70,70,70'
 #property indicator_width2  2
 
-// --- Plot 2: Freccia SELL — DRAW_COLOR_ARROW, 4 livelli ER ---
+// --- Plot 2: Freccia SELL — DRAW_COLOR_ARROW, 5 livelli ER + bloccato ---
 // Indice 0: rosso pieno  C'239,83,80'    ER>=0.60
 // Indice 1: arancione    C'255,138,101'  ER 0.35-0.59
 // Indice 2: giallo       C'255,193,7'    ER 0.15-0.34
 // Indice 3: grigio       C'120,120,120'  ER<0.15
+// Indice 4: grigio scuro  C'70,70,70'    BLOCCATO da filtri Fase 1
 #property indicator_label3  "Sell"
 #property indicator_type3   DRAW_COLOR_ARROW
-#property indicator_color3  C'239,83,80', C'255,138,101', C'255,193,7', C'120,120,120'
+#property indicator_color3  C'239,83,80', C'255,138,101', C'255,193,7', C'120,120,120', C'70,70,70'
 #property indicator_width3  2
 
 // --- Plot 3: Entry Level Line — linea orizzontale viola al livello di entrata ---
@@ -196,6 +198,16 @@ input ENUM_TIMEFRAMES InpBiasTF      = PERIOD_H1;   // Timeframe del bias (defau
 
 input group "                                                               "
 input group "╔═══════════════════════════════════════════════════════════╗"
+input group "║  🛡️ FILTRI FASE 1 — Test Visivo                         ║"
+input group "╚═══════════════════════════════════════════════════════════╝"
+
+input int             InpConfirmBars    = 2;        // Barre conferma trend (0/1=off, 2=raccomandato M5)
+input double          InpERStrong_Filt  = 0.35;     // Soglia ER per inversioni (0=off)
+input double          InpERWeak_Filt    = 0.15;     // Soglia ER minima (stessa direzione)
+input bool            InpShowBlocked    = true;     // Mostra frecce bloccate in grigio scuro
+
+input group "                                                               "
+input group "╔═══════════════════════════════════════════════════════════╗"
 input group "║  🎨 COLORI E STILE                                       ║"
 input group "╚═══════════════════════════════════════════════════════════╝"
 
@@ -224,6 +236,17 @@ input group "╚═════════════════════�
 
 input bool            InpAlertPopup  = true;     // Alert popup su nuova barra
 input bool            InpAlertPush   = false;    // Alert push notification
+
+input group "                                                               "
+input group "╔═══════════════════════════════════════════════════════════╗"
+input group "║  🧩 EMBED MODE (per host EA — usalo SOLO da iCustom)     ║"
+input group "╚═══════════════════════════════════════════════════════════╝"
+
+// Quando UTBotAdaptive viene caricato come resource embedded da un EA host
+// (es. Rattapignola), la dashboard interna e la trail line possono entrare
+// in conflitto con quelle dell'EA. Disattivarli con questi due flag.
+input bool            InpShowDashboard  = true;  // Mostra dashboard interna (off da EA host)
+input bool            InpShowTrailLine  = true;  // Mostra trail line Plot 0 (off da EA host)
 
 //+------------------------------------------------------------------+
 //| BUFFER — 14 buffer totali, 5 plot (v2.00)                       |
@@ -323,6 +346,11 @@ string UTB_DASH_PREFIX = "UTB_DASH_";
 #define UTB_DASH_MAX_ROWS 20
 double g_lastHtfState     = 0.0;    // HTF state per dashboard
 int    g_dash_ratesTotal  = 0;      // rates_total dall'ultimo OnCalculate
+
+//--- Stato conferma N-barre (Fase 1)
+int    g_confirm_pendingDir   = 0;    // direzione in attesa: +1=BUY, -1=SELL, 0=nessuna
+int    g_confirm_count        = 0;    // quante barre consecutive hanno confermato il trend
+int    g_confirm_lastDir      = 0;    // ultima direzione confermata (per ER asimmetrico)
 
 //+------------------------------------------------------------------+
 //| UTBotPresetsInit — Applica preset TF ai parametri effettivi      |
@@ -495,6 +523,8 @@ int OnInit()
       PlotIndexSetInteger(2, PLOT_DRAW_TYPE, DRAW_NONE);   // Plot 2 = SELL
       PlotIndexSetInteger(3, PLOT_DRAW_TYPE, DRAW_NONE);   // Plot 3 = Entry level
      }
+   if(!InpShowTrailLine)
+      PlotIndexSetInteger(0, PLOT_DRAW_TYPE, DRAW_NONE);   // Plot 0 = Trail Stop
 
    //--- Short name dinamico (usa g_eff_* per mostrare i valori effettivi)
    // Formato: UTBot[Key,ATR,Sorgente] — i parametri KAMA effettivi sono inclusi
@@ -533,6 +563,11 @@ int OnInit()
                       g_eff_jmaPeriod * 3) + 10;
    g_lastAlert = 0;
    g_entryLevel = EMPTY_VALUE;
+
+   //--- Reset stato conferma Fase 1
+   g_confirm_pendingDir = 0;
+   g_confirm_count      = 0;
+   g_confirm_lastDir    = 0;
 
    //--- Pre-calcola costanti JMA (una volta sola) ---
    {
@@ -662,8 +697,11 @@ int OnInit()
    g_dash_vis_arrows  = InpShowArrows;
    g_dash_vis_entry   = InpShowArrows;
    g_dash_vis_candles = InpColorBars;
-   InitUTBDashboard();
-   UpdateUTBDashboard(true);
+   if(InpShowDashboard)
+     {
+      InitUTBDashboard();
+      UpdateUTBDashboard(true);
+     }
 
    return(INIT_SUCCEEDED);
   }
@@ -673,7 +711,8 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
-   DestroyUTBDashboard();
+   if(InpShowDashboard)
+      DestroyUTBDashboard();
 
    if(g_htfHandle != INVALID_HANDLE)
      {
@@ -1131,6 +1170,15 @@ void UpdateUTBDashboard(bool forceUpdate = false)
    else
       UTBSetRow(row++, "Bias HTF: OFF", C'80,90,110');
 
+   //--- FILTRI FASE 1 ---
+   if(InpConfirmBars > 1)
+      UTBSetRow(row++, "Confirm: " + IntegerToString(InpConfirmBars) + " bars" +
+                (g_confirm_pendingDir != 0 ? " [PENDING " + IntegerToString(g_confirm_count) + "/" + IntegerToString(InpConfirmBars) + "]" : ""),
+                clrYellow);
+   if(InpERStrong_Filt > 0.0)
+      UTBSetRow(row++, "ER Asym: Rev>=" + DoubleToString(InpERStrong_Filt,2) +
+                " Cont>=" + DoubleToString(InpERWeak_Filt,2), clrYellow);
+
    //--- VISUALS ---
    UTBSetRow(row++, "━━━ VISUALS ━━━━━━━━━━━━━━━━━━━━━━━━", C'60,70,100', 7);
 
@@ -1418,22 +1466,12 @@ int OnCalculate(const int rates_total,
       // Barra corrente (i == rates_total-1): nessuna freccia, colore normale.
       if(i < rates_total - 1)
         {
-         //--- Segnali con filtro bias HTF ---
-         bool isBuy  = (src1 < t1) && (src > trail) && biasLong;
-         bool isSell = (src1 > t1) && (src < trail) && biasShort;
+         //=== STEP A: Crossover grezzo (identico all'originale) ===
+         bool rawBuy  = (src1 < t1) && (src > trail) && biasLong;
+         bool rawSell = (src1 > t1) && (src < trail) && biasShort;
 
-         //--- Frecce colorate per ER ---
-         B_Buy[i]     = isBuy  ? (low[i]  - g_atr[i] * 0.5) : EMPTY_VALUE;
-         B_BuyClr[i]  = (double)erIdx;
-         B_Sell[i]    = isSell ? (high[i] + g_atr[i] * 0.5) : EMPTY_VALUE;
-         B_SellClr[i] = (double)erIdx;
-
-         //--- Entry level line: carry-forward fino al prossimo segnale ---
-         if(isBuy || isSell)
-            g_entryLevel = close[i];
-         B_EntryLine[i] = g_entryLevel;
-
-         //--- Stato posizione (per EA, buffer 13) ---
+         //=== STEP B: Stato posizione GREZZO (per EA, buffer 13) ===
+         // B_State riflette il crossover grezzo, NON filtrato.
          if(src1 < t1 && src > t1)
             B_State[i] = 1.0;
          else if(src1 > t1 && src < t1)
@@ -1441,8 +1479,127 @@ int OnCalculate(const int rates_total,
          else
             B_State[i] = B_State[i - 1];
 
-         //--- Candele colorate ---
-         // Barra trigger (BUY o SELL): GIALLA — indice 2 = C'255,235,59'.
+         //=== STEP C: Conferma N-barre (persistenza trend) ===
+         bool confirmedBuy  = false;
+         bool confirmedSell = false;
+
+         if(InpConfirmBars <= 1)
+           {
+            // Nessuna conferma richiesta — comportamento originale
+            confirmedBuy  = rawBuy;
+            confirmedSell = rawSell;
+           }
+         else
+           {
+            // Crossover appena avvenuto → inizia conteggio
+            if(rawBuy)
+              {
+               g_confirm_pendingDir = +1;
+               g_confirm_count = 1;
+              }
+            else if(rawSell)
+              {
+               g_confirm_pendingDir = -1;
+               g_confirm_count = 1;
+              }
+            // Nessun crossover ma trend PERSISTE nella direzione pendente
+            else if(g_confirm_pendingDir == +1 && src > trail)
+              {
+               g_confirm_count++;
+              }
+            else if(g_confirm_pendingDir == -1 && src < trail)
+              {
+               g_confirm_count++;
+              }
+            else
+              {
+               // Trend invertito o perso prima della conferma → reset
+               g_confirm_count = 0;
+               g_confirm_pendingDir = 0;
+              }
+
+            // Segnale confermato quando il conteggio raggiunge N
+            if(g_confirm_pendingDir == +1 && g_confirm_count >= InpConfirmBars)
+              {
+               confirmedBuy = true;
+               g_confirm_count = 0;
+               g_confirm_pendingDir = 0;
+              }
+            if(g_confirm_pendingDir == -1 && g_confirm_count >= InpConfirmBars)
+              {
+               confirmedSell = true;
+               g_confirm_count = 0;
+               g_confirm_pendingDir = 0;
+              }
+           }
+
+         //=== STEP D: Filtro ER Asimmetrico ===
+         bool erBlockedBuy  = false;
+         bool erBlockedSell = false;
+
+         if(InpERStrong_Filt > 0.0 && (confirmedBuy || confirmedSell))
+           {
+            int newDir = confirmedBuy ? +1 : -1;
+            bool isReversal = (g_confirm_lastDir != 0 && newDir != g_confirm_lastDir);
+
+            double erThreshold = isReversal ? InpERStrong_Filt : InpERWeak_Filt;
+
+            if(er_val < erThreshold)
+              {
+               if(confirmedBuy)  erBlockedBuy  = true;
+               if(confirmedSell) erBlockedSell = true;
+               confirmedBuy  = false;
+               confirmedSell = false;
+              }
+           }
+
+         // Aggiorna l'ultima direzione confermata
+         if(confirmedBuy)  g_confirm_lastDir = +1;
+         if(confirmedSell) g_confirm_lastDir = -1;
+
+         //=== STEP E: Segnali finali ===
+         bool isBuy  = confirmedBuy;
+         bool isSell = confirmedSell;
+
+         //=== STEP F: Frecce — confermati + bloccati in grigio scuro ===
+         if(isBuy)
+           {
+            B_Buy[i]    = low[i] - g_atr[i] * 0.5;
+            B_BuyClr[i] = (double)erIdx;
+           }
+         else if((rawBuy || erBlockedBuy) && InpShowBlocked)
+           {
+            B_Buy[i]    = low[i] - g_atr[i] * 0.5;
+            B_BuyClr[i] = 4.0;    // grigio scuro (indice 4) = bloccato
+           }
+         else
+           {
+            B_Buy[i]    = EMPTY_VALUE;
+            B_BuyClr[i] = 0.0;
+           }
+
+         if(isSell)
+           {
+            B_Sell[i]    = high[i] + g_atr[i] * 0.5;
+            B_SellClr[i] = (double)erIdx;
+           }
+         else if((rawSell || erBlockedSell) && InpShowBlocked)
+           {
+            B_Sell[i]    = high[i] + g_atr[i] * 0.5;
+            B_SellClr[i] = 4.0;    // grigio scuro = bloccato
+           }
+         else
+           {
+            B_Sell[i]    = EMPTY_VALUE;
+            B_SellClr[i] = 0.0;
+           }
+
+         //=== STEP G: Entry level line (solo segnali CONFERMATI) ===
+         if(isBuy || isSell)
+            g_entryLevel = close[i];
+         B_EntryLine[i] = g_entryLevel;
+
+         //=== STEP H: Candele colorate ===
          if(InpColorBars)
            {
             B_CO[i]   = open[i];
@@ -1499,7 +1656,8 @@ int OnCalculate(const int rates_total,
 
    //--- Dashboard update (throttled 500ms)
    g_dash_ratesTotal = rates_total;
-   UpdateUTBDashboard();
+   if(InpShowDashboard)
+      UpdateUTBDashboard();
 
    return rates_total;
   }
