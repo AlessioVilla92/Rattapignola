@@ -59,6 +59,17 @@
 //|                                                                  |
 //| CHANGELOG                                                        |
 //|                                                                  |
+//| v4.04 — Flat Zone guard + Chandelier Exit markers                |
+//|   - Flat Zone: guard Donchian max-width. Se il range accumulato  |
+//|     (HH-LL) supera minWidthPrice, isFlat=false. Previene bande   |
+//|     blu diagonali larghe durante V-reversal borderline.          |
+//|   - Chandelier Exit markers: Plot 16 DRAW_COLOR_ARROW (X mark).  |
+//|     Arancione per long exit, magenta per short exit.             |
+//|   - ENUM_CHAND_EXIT_MODE: LOW/HIGH (default) o CLOSE-based.     |
+//|   - Buffer 35-36 (ChandExit + color). indicator_buffers 37.      |
+//|   - FIX iCustom HTF: era 33 param (mancavano ATRLong+MinWidth),  |
+//|     ora 36 con ordine corretto + InpChandExitMode.               |
+//|                                                                  |
 //| v4.03 — Polish: dashboard ER avg + banner nav + cleanup          |
 //|   - Dashboard: ER visualizzato come media su InpFlatERBars barre |
 //|     (era istantaneo → confusione quando FLAT attivo ma ER ist.>  |
@@ -103,6 +114,7 @@
 //|     su crossover bloccati dal bias HTF. Wingdings 169.           |
 //|   - Dashboard: pulsante CHAND (toggle visivo Plot 13-14).        |
 //|   - iCustom: 33 parametri (era 30), 3 nuovi Chandelier.         |
+//|     [v4.04 nota: ora 36 param, vedi v4.04 changelog sopra]      |
 //|   - FIX CRITICO (spec): g_chandLL init 0 → 999999 per           |
 //|     catturare correttamente i low iniziali.                      |
 //|   - Buffer 30-34, Plot 13-16, btnIds 7, MAX_ROWS 30.            |
@@ -177,13 +189,13 @@
 //|                                                                  |
 //+------------------------------------------------------------------+
 #property copyright "Alessio / AcquaDulza ecosystem"
-#property version   "4.03"
+#property version   "4.04"
 #property description "UT Bot Alerts — KAMA/HMA/JMA + anti-repainting + frecce multi-ER"
 #property description "v4.03: Flat Zone ATR-relativa + dashboard ER avg + banner nav + cleanup"
 #property description "BUY/SELL su barre chiuse. Canale laterale blu. Entry marker viola."
 #property indicator_chart_window
-#property indicator_buffers 35
-#property indicator_plots   16
+#property indicator_buffers 37
+#property indicator_plots   17
 
 //+------------------------------------------------------------------+
 //| DEFINIZIONE DEI 13 PLOT (v3.00)                                  |
@@ -293,6 +305,12 @@
 #property indicator_color16 C'100,100,180', C'180,100,100'
 #property indicator_width16 1
 
+// --- Plot 16: Chandelier Exit marker X (price violates chand level) ---
+#property indicator_label17 "Chand Exit"
+#property indicator_type17  DRAW_COLOR_ARROW
+#property indicator_color17 C'255,140,0', C'220,80,220'
+#property indicator_width17 2
+
 //+------------------------------------------------------------------+
 //| ENUM — Preset Timeframe                                          |
 //+------------------------------------------------------------------+
@@ -331,6 +349,13 @@ enum ENUM_SRC_TYPE
    SRC_HMA   = 1,  // Hull Moving Average (lag ridotto, smoothing costante)
    SRC_KAMA  = 2,  // Kaufman Adaptive MA (anti-whipsaw adattivo) — RACCOMANDATO
    SRC_JMA   = 3,  // Jurik-style MA (adattivo, quasi zero lag)
+  };
+
+// [v4.04] Chandelier Exit detection mode
+enum ENUM_CHAND_EXIT_MODE
+  {
+   CHAND_EXIT_LOWHIGH = 0,  // LOW/HIGH — tocco intra-bar (standard)
+   CHAND_EXIT_CLOSE   = 1,  // CLOSE — solo chiusura oltre livello
   };
 
 //+------------------------------------------------------------------+
@@ -400,6 +425,7 @@ input group "╚═════════════════════�
 input bool            InpShowChandelier = false;     // Mostra Chandelier Exit (overlay)
 input double          InpChandMult      = 2.5;       // Chandelier ATR multiplier
 input bool            InpChandVolNorm   = true;      // Normalizzazione volatilità ATR
+input ENUM_CHAND_EXIT_MODE InpChandExitMode = CHAND_EXIT_LOWHIGH; // [v4.04] Modalità exit Chandelier
 
 input group "                                                               "
 input group "╔═══════════════════════════════════════════════════════════╗"
@@ -444,7 +470,7 @@ input bool            InpShowDashboard  = true;  // Mostra dashboard interna (of
 input bool            InpShowTrailLine  = true;  // Mostra trail line Plot 0 (off da EA host)
 
 //+------------------------------------------------------------------+
-//| BUFFER — 30 buffer totali, 13 plot (v3.00)                      |
+//| BUFFER — 37 buffer totali, 17 plot (v4.04)                      |
 //+------------------------------------------------------------------+
 // Plot 0:  Buf 0-1   DRAW_COLOR_LINE    Trail stop + color
 // Plot 1:  Buf 2-3   DRAW_COLOR_ARROW   Buy1 (primaria) + color
@@ -464,9 +490,16 @@ input bool            InpShowTrailLine  = true;  // Mostra trail line Plot 0 (of
 // ---     Buf 28    CALCULATIONS       FlatState (1=active, 0=flat)
 // ---     Buf 29    CALCULATIONS       ChannelWidth (2*nLoss)
 //
+// Plot 13: Buf 31    DRAW_LINE          Chandelier Long (verde dash)
+// Plot 14: Buf 32    DRAW_LINE          Chandelier Short (rosso dash)
+// Plot 15: Buf 33-34 DRAW_COLOR_ARROW   BiasContra ◆ + color
+// Plot 16: Buf 35-36 DRAW_COLOR_ARROW   ChandExit ✕ + color [v4.04]
+// ---     Buf 30    CALCULATIONS       BiasGate (1.0/0.0/EMPTY)
+//
 // EA extern: CopyBuffer(h, 2,..)  Buy1  | CopyBuffer(h, 8,..)  Sell1
 //            CopyBuffer(h, 26,..) ER    | CopyBuffer(h, 27,..) State
 //            CopyBuffer(h, 28,..) Flat  | CopyBuffer(h, 29,..) ChWidth
+//            CopyBuffer(h, 35,..) ChandExit | CopyBuffer(h, 36,..) ChandExitClr
 
 double B_Trail[];       // buffer 0
 double B_TrailClr[];    // buffer 1
@@ -504,6 +537,9 @@ double B_ChandLong[];    // buffer 31 (Plot 13) Chandelier trailing long
 double B_ChandShort[];   // buffer 32 (Plot 14) Chandelier trailing short
 double B_BiasContra[];   // buffer 33 (Plot 15) marker ◆ contro-bias
 double B_BiasContraClr[];// buffer 34 (Plot 15 COLOR)
+// [v4.04] Chandelier Exit markers
+double B_ChandExit[];      // buffer 35 (Plot 16) Chandelier exit marker X
+double B_ChandExitClr[];   // buffer 36 (Plot 16 COLOR) 0=long exit, 1=short exit
 
 //+------------------------------------------------------------------+
 //| Variabili interne                                                |
@@ -802,6 +838,9 @@ int OnInit()
    SetIndexBuffer(32, B_ChandShort,    INDICATOR_DATA);
    SetIndexBuffer(33, B_BiasContra,    INDICATOR_DATA);
    SetIndexBuffer(34, B_BiasContraClr, INDICATOR_COLOR_INDEX);
+   // [v4.04] Chandelier Exit markers
+   SetIndexBuffer(35, B_ChandExit,    INDICATOR_DATA);
+   SetIndexBuffer(36, B_ChandExitClr, INDICATOR_COLOR_INDEX);
 
    //--- Codici freccia per ogni plot
    PlotIndexSetInteger(1, PLOT_ARROW, 233);   // Buy1  ▲
@@ -812,6 +851,7 @@ int OnInit()
    PlotIndexSetInteger(6, PLOT_ARROW, 234);   // Sell3 ▼
    PlotIndexSetInteger(7, PLOT_ARROW, 158);   // Caution ■ (filled square)
    PlotIndexSetInteger(15, PLOT_ARROW, 169);  // [v4.00] BiasContra ◆ (diamond)
+   PlotIndexSetInteger(16, PLOT_ARROW, 251);  // [v4.04] ChandExit ✕ (X mark)
 
    //--- Empty values per tutti i 13 plot
    PlotIndexSetDouble(0,  PLOT_EMPTY_VALUE, 0.0);          // Trail
@@ -825,6 +865,7 @@ int OnInit()
    PlotIndexSetDouble(13, PLOT_EMPTY_VALUE, EMPTY_VALUE);  // [v4.00] Chand Long
    PlotIndexSetDouble(14, PLOT_EMPTY_VALUE, EMPTY_VALUE);  // [v4.00] Chand Short
    PlotIndexSetDouble(15, PLOT_EMPTY_VALUE, EMPTY_VALUE);  // [v4.00] Bias Contra
+   PlotIndexSetDouble(16, PLOT_EMPTY_VALUE, EMPTY_VALUE);  // [v4.04] Chand Exit
 
    //--- Disabilita plot opzionali
    if(!InpColorBars)
@@ -852,6 +893,7 @@ int OnInit()
      {
       PlotIndexSetInteger(13, PLOT_DRAW_TYPE, DRAW_NONE);
       PlotIndexSetInteger(14, PLOT_DRAW_TYPE, DRAW_NONE);
+      PlotIndexSetInteger(16, PLOT_DRAW_TYPE, DRAW_NONE);  // [v4.04] ChandExit
      }
    // [v4.00] BiasContra markers (visibili solo se bias HTF possibile)
    if(g_htfHandle == INVALID_HANDLE)
@@ -916,14 +958,15 @@ int OnInit()
    // [v3.52] g_eff_biasTF: preset auto per TF (M1→M15, M5→M30, M15→H1, ecc.)
    if(_Period != g_eff_biasTF)
      {
+      // [v4.04 fix] iCustom: 36 parametri (era 33, mancavano InpFlatATRLong + InpFlatMinWidth)
       g_htfHandle = iCustom(_Symbol, g_eff_biasTF, "UTBotAdaptive-Ok-V1",
                             InpTFPreset,      InpKeyValue,      InpATRPeriod,
                             InpSrcType,       InpHMAPeriod,
                             InpKAMA_N,        InpKAMA_Fast,     InpKAMA_Slow,
                             InpJMA_Period,    InpJMA_Phase,
                             false, PERIOD_H1,                   // bias OFF (child)
-                            false, 0.0, 0.20, 8, false,         // Flat OFF (child)
-                            false, 2.5, true,                    // Chand OFF (child) [v4.00]
+                            false, 0.75, 20, 0.0, 0.20, 8, false, // Flat OFF (child) [v4.04 fix: +ATRLong +MinWidth]
+                            false, 2.5, true, CHAND_EXIT_LOWHIGH, // Chand OFF + exit mode [v4.04]
                             false, false,                        // ColorBars OFF, Arrows OFF
                             false, false,                        // Theme OFF, Grid OFF
                             InpThemeBG, InpThemeFG, InpThemeGrid,
@@ -931,7 +974,7 @@ int OnInit()
                             false, false,                        // Alert OFF
                             false, false);                       // Dashboard OFF, Trail OFF
       if(g_htfHandle == INVALID_HANDLE)
-         Print("[UTBot v4.03] WARN: handle HTF bias non valido, bias disabilitato");
+         Print("[UTBot v4.04] WARN: handle HTF bias non valido, bias disabilitato");
      }
 
    //--- Chart theme (anti-flash con GlobalVariables)
@@ -1005,7 +1048,7 @@ int OnInit()
 
    // Log completo dei parametri effettivi nel tab Experts.
    // Utile per verificare quale preset è attivo e i valori KAMA applicati.
-   Print("[UTBot v4.03] Preset=", EnumToString(InpTFPreset),
+   Print("[UTBot v4.04] Preset=", EnumToString(InpTFPreset),
          " | Key=", DoubleToString(g_eff_keyValue, 1),
          " | ATR=", g_eff_atrPeriod,
          " | Src=", EnumToString(g_eff_srcType),
@@ -1411,7 +1454,7 @@ void UpdateUTBDashboard(bool forceUpdate = false)
    int row = 0;
 
    //--- HEADER ---
-   UTBSetRow(row++, "UTBot v4.03 | " + _Symbol + " | " + EnumToString(_Period),
+   UTBSetRow(row++, "UTBot v4.04 | " + _Symbol + " | " + EnumToString(_Period),
              C'70,130,255', 10);
    UTBSetRow(row++, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", C'60,70,100', 7);
 
@@ -1820,6 +1863,8 @@ void OnChartEvent(const int id, const long &lparam,
                           g_dash_vis_chand ? DRAW_LINE : DRAW_NONE);
       PlotIndexSetInteger(14, PLOT_DRAW_TYPE,
                           g_dash_vis_chand ? DRAW_LINE : DRAW_NONE);
+      PlotIndexSetInteger(16, PLOT_DRAW_TYPE,
+                          g_dash_vis_chand ? DRAW_COLOR_ARROW : DRAW_NONE);  // [v4.04] ChandExit
       g_forceRecalcCounter++;  // [v4.01] forza fullRecalc al prossimo tick
      }
 
@@ -1984,6 +2029,9 @@ int OnCalculate(const int rates_total,
       B_ChandShort[trail_start - 1]   = EMPTY_VALUE;
       B_BiasContra[trail_start - 1]   = EMPTY_VALUE;
       B_BiasContraClr[trail_start - 1] = 0;
+      // [v4.04] Chandelier Exit markers
+      B_ChandExit[trail_start - 1]    = EMPTY_VALUE;
+      B_ChandExitClr[trail_start - 1] = 0;
       // [v4.00] Reset stato Chandelier
       g_chandHH         = 0;
       g_chandLL         = 999999;   // FIX: deve essere alto per catturare low[i]
@@ -2173,6 +2221,19 @@ int OnCalculate(const int rates_total,
                  && (erAvg < InpFlatERThresh);
       B_FlatState[i] = isFlat ? 0.0 : 1.0;
 
+      // [v4.04] Guard: Donchian max-width. Previene bande larghe
+      // durante V-reversal dove le gate sono borderline-true.
+      if(isFlat && g_wasFlatPrev)
+        {
+         double prospHH = MathMax(g_flatRangeHigh, high[i]);
+         double prospLL = MathMin(g_flatRangeLow,  low[i]);
+         if((prospHH - prospLL) > minWidthPrice)
+           {
+            isFlat = false;
+            B_FlatState[i] = 1.0;   // override → ACTIVE per EA
+           }
+        }
+
       //─── FLAT ZONE VISUALIZATION — Donchian orizzontale ───────────
       // Disegna un rettangolo azzurro (DRAW_FILLING) + 2 linee DOT
       // bianche solo nelle barre dove isFlat=true. HH/LL congelati al
@@ -2283,11 +2344,41 @@ int OnCalculate(const int rates_total,
             B_ChandShort[i] = chandShortVal;
             B_ChandLong[i]  = EMPTY_VALUE;
            }
+
+         // [v4.04] Chandelier Exit marker — detect price violation
+         // Solo su barre CHIUSE (anti-repainting). Skip su chandReset (levels appena init).
+         if(i < rates_total - 1 && !chandReset)
+           {
+            bool chandLongExit  = false;
+            bool chandShortExit = false;
+
+            if(InpChandExitMode == CHAND_EXIT_LOWHIGH)
+              {
+               if(B_ChandLong[i]  != EMPTY_VALUE) chandLongExit  = (low[i]   < B_ChandLong[i]);
+               if(B_ChandShort[i] != EMPTY_VALUE) chandShortExit = (high[i]  > B_ChandShort[i]);
+              }
+            else // CHAND_EXIT_CLOSE
+              {
+               if(B_ChandLong[i]  != EMPTY_VALUE) chandLongExit  = (close[i] < B_ChandLong[i]);
+               if(B_ChandShort[i] != EMPTY_VALUE) chandShortExit = (close[i] > B_ChandShort[i]);
+              }
+
+            if(chandLongExit)
+              { B_ChandExit[i] = low[i] - g_atr[i] * 0.3; B_ChandExitClr[i] = 0.0; }
+            else if(chandShortExit)
+              { B_ChandExit[i] = high[i] + g_atr[i] * 0.3; B_ChandExitClr[i] = 1.0; }
+            else
+              { B_ChandExit[i] = EMPTY_VALUE; B_ChandExitClr[i] = 0.0; }
+           }
+         else
+           { B_ChandExit[i] = EMPTY_VALUE; B_ChandExitClr[i] = 0.0; }
         }
       else
         {
          B_ChandLong[i]  = EMPTY_VALUE;
          B_ChandShort[i] = EMPTY_VALUE;
+         B_ChandExit[i]    = EMPTY_VALUE;
+         B_ChandExitClr[i] = 0.0;
         }
 
       //═══════════════════════════════════════════════════════════════
@@ -2515,6 +2606,9 @@ int OnCalculate(const int rates_total,
             B_ChandLong[i]  = EMPTY_VALUE;
             B_ChandShort[i] = EMPTY_VALUE;
            }
+         // [v4.04] Chand Exit: no marker on bar-formante (anti-repainting)
+         B_ChandExit[i]    = EMPTY_VALUE;
+         B_ChandExitClr[i] = 0.0;
 
          if(InpColorBars)
            {
