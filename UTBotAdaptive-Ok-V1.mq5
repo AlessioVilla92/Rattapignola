@@ -59,6 +59,43 @@
 //|                                                                  |
 //| CHANGELOG                                                        |
 //|                                                                  |
+//| v3.52 — Bias HTF auto-preset + B_State bias-aware                |
+//|   - g_eff_biasTF: TF bias automatico per preset                  |
+//|     M1→M15, M5→M30, M15→H1, M30→H4, H1→H4, H4→D1              |
+//|     MANUAL: usa InpBiasTF dall'input utente                      |
+//|   - InpBiasTF → g_eff_biasTF in tutti i path runtime            |
+//|     (iCustom, iBars, iBarShift, dashboard)                       |
+//|   - Fix: B_State ora rispetta il filtro bias HTF                 |
+//|     Prima usava crossover raw (src vs t1): l'EA vedeva           |
+//|     cambio di stato su pullback piccoli contro-trend anche       |
+//|     quando l'HTF era in trending → chiusure inutili.             |
+//|     Ora B_State cambia SOLO con isBuy/isSell filtrati.           |
+//|                                                                  |
+//| v3.51 — Bugfix post-audit v3.50                                 |
+//|   - Fix: iBarShift -1 guard (anti-repainting HTF bias per-bar)  |
+//|     iBarShift ritorna -1 se tempo non trovato → htfIdx=0 →      |
+//|     leggeva barra formante. Aggiunto if(htfShift >= 0) guard.    |
+//|   - Fix: Donchian reset su OGNI fullRecalc (init, cambio TF)    |
+//|     Prima il reset g_wasFlatPrev/HH/LL era solo nel path        |
+//|     force-recalc → prima flat zone dopo load ereditava stantii.  |
+//|   - Fix: InpShowFlatZone → g_dash_vis_flatzone nel loop calc    |
+//|     Input immutabile ignorava toggle dashboard FLAT; buffer      |
+//|     restavano EMPTY_VALUE anche con toggle ON.                   |
+//|   - Fix: FLAT toggle OFF→ON resetta Donchian (g_wasFlatPrev,    |
+//|     g_flatRangeHigh/Low) per evitare range stantii ereditati     |
+//|     dal periodo flat precedente alla riattivazione.              |
+//|                                                                  |
+//| v3.50 — HTF bias per-bar + Donchian flat + dashboard toggles     |
+//|   - HTF bias per-bar con iBarShift (backtest visivo corretto)    |
+//|     CopyBuffer full solo in fullRecalc (performance fix)         |
+//|   - Flat zone: Donchian orizzontale (HH/LL persistenti)          |
+//|   - Dashboard: +2 pulsanti toggle (FLAT visivo, BIAS logico)     |
+//|   - BIAS toggle: force-recalc tutte le frecce + reset Donchian   |
+//|   - Handle HTF sempre creato (toggle indipendente da input)      |
+//|   - Preset FlatMinWidth ridotti per reattivita migliorata        |
+//|   - Button pool 4→6 (fix: FLAT+BIAS non cliccabili)             |
+//|   - Bias dashboard 3 stati: ON/OFF(toggle)/N/A(stesso TF)       |
+//|                                                                  |
 //| v3.01 — Dashboard trading avanzata + bugfix                      |
 //|   - Dashboard: +4 righe live (ATR pips, Entry P/L, Ultimo        |
 //|     Segnale con barre fa, Spread con colore semaforo)            |
@@ -92,9 +129,9 @@
 //|                                                                  |
 //+------------------------------------------------------------------+
 #property copyright "Alessio / AcquaDulza ecosystem"
-#property version   "3.01"
+#property version   "3.52"
 #property description "UT Bot Alerts — KAMA/HMA/JMA + anti-repainting + frecce multi-ER"
-#property description "v3.01: frecce 3/2/1+■ per ER, preset MA auto per TF, zona FLAT"
+#property description "v3.52: bias HTF auto-preset per TF, B_State bias-aware"
 #property description "BUY/SELL su barre chiuse. Canale laterale blu. Entry marker viola."
 #property indicator_chart_window
 #property indicator_buffers 30
@@ -413,6 +450,9 @@ ENUM_SRC_TYPE g_eff_srcType;    // SrcType effettivo (overridato da preset AUTO)
 // --- Flat detection (v3.00) ---
 double g_eff_flatMinWidth;       // MinWidth effettivo (auto-preset o manuale)
 
+// --- Bias HTF auto-preset (v3.52) ---
+ENUM_TIMEFRAMES g_eff_biasTF;   // TF bias effettivo (overridato da preset AUTO)
+
 // --- Stato interno JMA (persistente tra chiamate OnCalculate) ---
 // Formula completa con Jurik Bands + volatilita dinamica.
 // Fonte: Igor 2008 + mihakralj (match <2% vs DLL Jurik) + lastguru + pandas_ta.
@@ -455,10 +495,21 @@ bool   g_dash_vis_trail   = true;   // Trail Stop line
 bool   g_dash_vis_arrows  = true;   // Frecce BUY/SELL
 bool   g_dash_vis_entry   = true;   // Entry marker viola
 bool   g_dash_vis_candles = true;   // Candele colorate
+bool   g_dash_vis_flatzone = true;  // [v3.50] Flat zone visibilità (toggle dashboard)
+bool   g_dash_vis_bias     = true;  // [v3.50] Bias HTF attivo (toggle logico dashboard)
 string UTB_DASH_PREFIX = "UTB_DASH_";
-#define UTB_DASH_MAX_ROWS 24
+#define UTB_DASH_MAX_ROWS 28        // [v3.50] era 24, +4 per pulsanti FLAT+BIAS + margine
 double g_lastHtfState     = 0.0;    // HTF state per dashboard
 int    g_dash_ratesTotal  = 0;      // rates_total dall'ultimo OnCalculate
+
+// --- HTF Bias runtime toggle (v3.50) ---
+bool   g_biasEnabled;               // runtime toggle (init da InpUseBias)
+int    g_forceRecalcCounter = 0;    // incrementato da OnChartEvent per forzare fullRecalc
+
+// --- Flat zone Donchian (v3.50) ---
+double g_flatRangeHigh;             // HH dall'inizio della flat zone
+double g_flatRangeLow;              // LL dall'inizio della flat zone
+bool   g_wasFlatPrev;               // isFlat della barra precedente
 
 //+------------------------------------------------------------------+
 //| UTBotPresetsInit — Applica preset TF ai parametri effettivi      |
@@ -523,7 +574,8 @@ void UTBotPresetsInit()
          g_eff_kamaSlow    = 20;
          g_eff_jmaPeriod   = 5;
          g_eff_jmaPhase    = 0;
-         g_eff_flatMinWidth = 3.0;   // pips
+         g_eff_flatMinWidth = 2.0;   // pips
+         g_eff_biasTF      = PERIOD_M15;  // [v3.52] Bias HTF auto
          break;
 
       case TF_PRESET_UT_M5:
@@ -535,7 +587,8 @@ void UTBotPresetsInit()
          g_eff_kamaSlow    = 20;
          g_eff_jmaPeriod   = 8;
          g_eff_jmaPhase    = 0;
-         g_eff_flatMinWidth = 5.0;
+         g_eff_flatMinWidth = 3.5;
+         g_eff_biasTF      = PERIOD_M30;  // [v3.52] Bias HTF auto
          break;
 
       case TF_PRESET_UT_M15:
@@ -547,7 +600,8 @@ void UTBotPresetsInit()
          g_eff_kamaSlow    = 30;
          g_eff_jmaPeriod   = 14;
          g_eff_jmaPhase    = 0;
-         g_eff_flatMinWidth = 8.0;
+         g_eff_flatMinWidth = 6.0;
+         g_eff_biasTF      = PERIOD_H1;   // [v3.52] Bias HTF auto
          break;
 
       case TF_PRESET_UT_M30:
@@ -559,7 +613,8 @@ void UTBotPresetsInit()
          g_eff_kamaSlow    = 30;
          g_eff_jmaPeriod   = 18;
          g_eff_jmaPhase    = 50;
-         g_eff_flatMinWidth = 12.0;
+         g_eff_flatMinWidth = 10.0;
+         g_eff_biasTF      = PERIOD_H4;   // [v3.52] Bias HTF auto
          break;
 
       case TF_PRESET_UT_H1:
@@ -571,7 +626,8 @@ void UTBotPresetsInit()
          g_eff_kamaSlow    = 35;
          g_eff_jmaPeriod   = 20;
          g_eff_jmaPhase    = 50;
-         g_eff_flatMinWidth = 18.0;
+         g_eff_flatMinWidth = 15.0;
+         g_eff_biasTF      = PERIOD_H4;   // [v3.52] Bias HTF auto
          break;
 
       case TF_PRESET_UT_H4:
@@ -583,7 +639,8 @@ void UTBotPresetsInit()
          g_eff_kamaSlow    = 40;
          g_eff_jmaPeriod   = 28;
          g_eff_jmaPhase    = 75;
-         g_eff_flatMinWidth = 25.0;
+         g_eff_flatMinWidth = 20.0;
+         g_eff_biasTF      = PERIOD_D1;   // [v3.52] Bias HTF auto
          break;
 
       default: // MANUAL
@@ -596,6 +653,7 @@ void UTBotPresetsInit()
          g_eff_jmaPeriod   = InpJMA_Period;
          g_eff_jmaPhase    = InpJMA_Phase;
          g_eff_flatMinWidth = (InpFlatMinWidth > 0.0) ? InpFlatMinWidth : 8.0;
+         g_eff_biasTF      = InpBiasTF;   // [v3.52] MANUAL: utente decide
          break;
      }
 
@@ -739,9 +797,12 @@ int OnInit()
    // InpUseBias=false sull'istanza HTF evita ricorsione infinita.
    // InpApplyTheme=false: il child NON deve toccare il tema chart.
    // InpSrcType (NON g_eff_srcType): il child fa il proprio UTBotPresetsInit().
-   if(InpUseBias && _Period != InpBiasTF)
+   // [v3.50] Handle HTF creato SEMPRE (se TF diverso), indipendentemente da InpUseBias.
+   // Così il toggle dashboard BIAS funziona anche se InpUseBias era false all'avvio.
+   // [v3.52] g_eff_biasTF: preset auto per TF (M1→M15, M5→M30, M15→H1, ecc.)
+   if(_Period != g_eff_biasTF)
      {
-      g_htfHandle = iCustom(_Symbol, InpBiasTF, "UTBotAdaptive-Ok-V1",
+      g_htfHandle = iCustom(_Symbol, g_eff_biasTF, "UTBotAdaptive-Ok-V1",
                             InpTFPreset,      InpKeyValue,      InpATRPeriod,
                             InpSrcType,       InpHMAPeriod,
                             InpKAMA_N,        InpKAMA_Fast,     InpKAMA_Slow,
@@ -755,7 +816,7 @@ int OnInit()
                             false, false,                        // Alert OFF
                             false, false);                       // Dashboard OFF, Trail OFF
       if(g_htfHandle == INVALID_HANDLE)
-         Print("[UTBot v3.01] WARN: handle HTF bias non valido, bias disabilitato");
+         Print("[UTBot v3.52] WARN: handle HTF bias non valido, bias disabilitato");
      }
 
    //--- Chart theme (anti-flash con GlobalVariables)
@@ -829,7 +890,7 @@ int OnInit()
 
    // Log completo dei parametri effettivi nel tab Experts.
    // Utile per verificare quale preset è attivo e i valori KAMA applicati.
-   Print("[UTBot v3.01] Preset=", EnumToString(InpTFPreset),
+   Print("[UTBot v3.52] Preset=", EnumToString(InpTFPreset),
          " | Key=", DoubleToString(g_eff_keyValue, 1),
          " | ATR=", g_eff_atrPeriod,
          " | Src=", EnumToString(g_eff_srcType),
@@ -845,6 +906,13 @@ int OnInit()
    g_dash_vis_arrows  = InpShowArrows;
    g_dash_vis_entry   = InpShowArrows;
    g_dash_vis_candles = InpColorBars;
+   // [v3.50] Init stato runtime per toggle dashboard
+   g_biasEnabled       = InpUseBias;
+   g_dash_vis_bias     = InpUseBias;
+   g_dash_vis_flatzone = InpShowFlatZone;
+   g_wasFlatPrev       = false;
+   g_flatRangeHigh     = 0;
+   g_flatRangeLow      = 0;
    if(InpShowDashboard)
      {
       InitUTBDashboard();
@@ -1189,9 +1257,9 @@ void InitUTBDashboard()
       ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_NO_PERIODS);
      }
 
-   //--- Button pool (4 toggle: TRAIL, ARROWS, ENTRY, CANDLES)
-   string btnIds[4] = {"TRAIL", "ARROWS", "ENTRY", "CANDLES"};
-   for(int i = 0; i < 4; i++)
+   //--- Button pool (6 toggle: TRAIL, ARROWS, ENTRY, CANDLES, FLAT, BIAS)
+   string btnIds[6] = {"TRAIL", "ARROWS", "ENTRY", "CANDLES", "FLAT", "BIAS"};
+   for(int i = 0; i < 6; i++)
      {
       string name = UTB_DASH_PREFIX + "BTN_" + btnIds[i];
       ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
@@ -1222,7 +1290,7 @@ void UpdateUTBDashboard(bool forceUpdate = false)
    int row = 0;
 
    //--- HEADER ---
-   UTBSetRow(row++, "UTBot v3.01 | " + _Symbol + " | " + EnumToString(_Period),
+   UTBSetRow(row++, "UTBot v3.52 | " + _Symbol + " | " + EnumToString(_Period),
              C'70,130,255', 10);
    UTBSetRow(row++, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", C'60,70,100', 7);
 
@@ -1370,17 +1438,19 @@ void UpdateUTBDashboard(bool forceUpdate = false)
    UTBSetRow(row++, "Key: " + DoubleToString(g_eff_keyValue, 1) +
              " | ATR: " + IntegerToString(g_eff_atrPeriod), C'150,165,185');
 
-   // Bias HTF
-   if(InpUseBias && g_htfHandle != INVALID_HANDLE)
+   // [v3.50] Bias HTF — usa g_biasEnabled (runtime toggle)
+   if(g_biasEnabled && g_htfHandle != INVALID_HANDLE)
      {
       string htfDir = (g_lastHtfState > 0.5)  ? "LONG ▲" :
                       (g_lastHtfState < -0.5) ? "SHORT ▼" : "NEUTRO";
       color  htfClr = (g_lastHtfState > 0.5)  ? C'50,220,120' :
                       (g_lastHtfState < -0.5) ? C'239,83,80'  : C'150,165,185';
-      UTBSetRow(row++, "Bias HTF: " + EnumToString(InpBiasTF) + " " + htfDir, htfClr);
+      UTBSetRow(row++, "Bias HTF: " + EnumToString(g_eff_biasTF) + " " + htfDir, htfClr);
      }
+   else if(g_htfHandle != INVALID_HANDLE)
+      UTBSetRow(row++, "Bias HTF: OFF (toggle)", C'80,90,110');
    else
-      UTBSetRow(row++, "Bias HTF: OFF", C'80,90,110');
+      UTBSetRow(row++, "Bias HTF: N/A (stesso TF)", C'60,60,80');
 
    // [v3.00] Sezione FLAT STATUS — mostra regime corrente (FLAT/ACTIVE)
    // e channel width in pips. Legge B_FlatState[barra chiusa]:
@@ -1445,6 +1515,23 @@ void UpdateUTBDashboard(bool forceUpdate = false)
    UTBSetRow(row, "Candele Trigger    " + vst, vcl);
    UTBSetBtn("CANDLES", g_dash_vis_candles, y_base + 6 + row * y_step);
    row++;
+
+   // [v3.50] Flat Zone toggle (visivo: mostra/nasconde canale blu)
+   vst = g_dash_vis_flatzone ? "● ON" : "○ OFF";
+   vcl = g_dash_vis_flatzone ? C'70,200,130' : C'50,70,120';
+   UTBSetRow(row, "Flat Zone          " + vst, vcl);
+   UTBSetBtn("FLAT", g_dash_vis_flatzone, y_base + 6 + row * y_step);
+   row++;
+
+   // [v3.50] Bias HTF toggle (LOGICO: attiva/disattiva bias + forza recalc)
+   if(g_htfHandle != INVALID_HANDLE)
+     {
+      vst = g_dash_vis_bias ? "● ON" : "○ OFF";
+      vcl = g_dash_vis_bias ? C'70,200,130' : C'50,70,120';
+      UTBSetRow(row, "Bias HTF           " + vst, vcl);
+      UTBSetBtn("BIAS", g_dash_vis_bias, y_base + 6 + row * y_step);
+      row++;
+     }
 
    //--- Hide unused rows
    for(int r = row; r < UTB_DASH_MAX_ROWS; r++)
@@ -1521,6 +1608,39 @@ void OnChartEvent(const int id, const long &lparam,
                           g_dash_vis_candles ? DRAW_COLOR_CANDLES : DRAW_NONE);
      }
 
+   //--- [v3.50] FLAT: toggle visivo Plot 9-11 (fill + upper + lower)
+   // Cambia solo la visibilità (DRAW_FILLING/LINE vs DRAW_NONE).
+   // I buffer flat sono sempre calcolati se InpFlatDetect=true.
+   if(btn_id == "FLAT")
+     {
+      bool wasVis = g_dash_vis_flatzone;
+      g_dash_vis_flatzone = !g_dash_vis_flatzone;
+      // [v3.51 fix] Reset Donchian quando toggle FLAT passa OFF→ON: evita che
+      // la prossima flat zone erediti HH/LL stantii dal periodo precedente.
+      if(!wasVis && g_dash_vis_flatzone)
+        {
+         g_wasFlatPrev   = false;
+         g_flatRangeHigh = 0;
+         g_flatRangeLow  = 0;
+        }
+      PlotIndexSetInteger(9,  PLOT_DRAW_TYPE,
+                          g_dash_vis_flatzone ? DRAW_FILLING : DRAW_NONE);
+      PlotIndexSetInteger(10, PLOT_DRAW_TYPE,
+                          g_dash_vis_flatzone ? DRAW_LINE : DRAW_NONE);
+      PlotIndexSetInteger(11, PLOT_DRAW_TYPE,
+                          g_dash_vis_flatzone ? DRAW_LINE : DRAW_NONE);
+     }
+
+   //--- [v3.50] BIAS: toggle LOGICO + force recalc
+   // Cambia g_biasEnabled → tutte le frecce storiche vengono ricalcolate
+   // al prossimo OnCalculate con il nuovo stato del bias.
+   if(btn_id == "BIAS")
+     {
+      g_dash_vis_bias = !g_dash_vis_bias;
+      g_biasEnabled = g_dash_vis_bias;
+      g_forceRecalcCounter++;  // forza fullRecalc al prossimo tick
+     }
+
    UpdateUTBDashboard(true);
    ChartRedraw();
   }
@@ -1554,6 +1674,27 @@ int OnCalculate(const int rates_total,
 
    bool fullRecalc = (prev_calculated < g_warmup + 2);
    int  start      = fullRecalc ? 1 : prev_calculated - 1;
+
+   // [v3.50] Force fullRecalc quando dashboard toggle BIAS cambia stato.
+   // g_forceRecalcCounter viene incrementato in OnChartEvent → BIAS handler.
+   // Al prossimo tick, il contatore diverso da s_lastRecalcCheck forza fullRecalc.
+   static int s_lastRecalcCheck = 0;
+   if(g_forceRecalcCounter != s_lastRecalcCheck)
+     {
+      s_lastRecalcCheck = g_forceRecalcCounter;
+      fullRecalc = true;
+      start = 1;
+     }
+
+   // [v3.51 fix] Reset stato Donchian su OGNI fullRecalc (init, cambio TF, force-recalc).
+   // In v3.50 il reset era solo nel path force-recalc → la prima flat zone dopo
+   // caricamento iniziale o cambio TF ereditava HH/LL stantii.
+   if(fullRecalc)
+     {
+      g_wasFlatPrev   = false;
+      g_flatRangeHigh = 0;
+      g_flatRangeLow  = 0;
+     }
 
    //=== STEP 1: ATR Wilder (RMA) — usa g_eff_atrPeriod ===
    if(fullRecalc)
@@ -1659,20 +1800,43 @@ int OnCalculate(const int rates_total,
       g_entryLevel = EMPTY_VALUE;
      }
 
-   //--- Legge bias HTF una sola volta prima del loop ---
-   // Offset=1: usa sempre barra chiusa del TF superiore (anti-repainting).
-   // [v3.00] CopyBuffer buffer 27 (era 13 in v2.01) — B_State è ora il
-   // 28° buffer (indice 27) dopo l'espansione a 30 buffer totali.
-   double htfState = 0.0;
-   if(InpUseBias && g_htfHandle != INVALID_HANDLE)
+   //--- HTF Bias — per-bar durante fullRecalc, singolo altrimenti (v3.50) ---
+   // [v3.50] Durante fullRecalc, il bias va letto barra per barra dall'istanza HTF
+   // per avere il backtest visivo corretto. In v3.01 il bias era letto UNA volta prima
+   // del loop → tutte le barre storiche usavano il bias ODIERNO, falsando le frecce.
+   // Ora si copia l'intero B_State dall'HTF e si usa iBarShift per mappare ogni barra.
+   // CopyBuffer full SOLO durante fullRecalc; incrementale: solo barra chiusa corrente.
+   double htfStateArr[];
+   int htfCopied = 0;
+   bool htfAvailable = g_biasEnabled && g_htfHandle != INVALID_HANDLE;
+   double htfStateCurrent = 0.0;
+
+   if(htfAvailable)
      {
-      double tmp[1];
-      if(CopyBuffer(g_htfHandle, 27, 1, 1, tmp) == 1)
-         htfState = tmp[0];
+      if(fullRecalc)
+        {
+         // [v3.50] Full copy per per-bar mapping (una volta per fullRecalc)
+         int htfBars = iBars(_Symbol, g_eff_biasTF);
+         if(htfBars > 0)
+           {
+            ArraySetAsSeries(htfStateArr, true);
+            htfCopied = CopyBuffer(g_htfHandle, 27, 0, htfBars, htfStateArr);
+           }
+         if(htfCopied > 1)
+            htfStateCurrent = htfStateArr[1];
+        }
+      else
+        {
+         // Incrementale: solo barra chiusa corrente (come v3.01, efficiente)
+         double tmp[1];
+         if(CopyBuffer(g_htfHandle, 27, 1, 1, tmp) == 1)
+            htfStateCurrent = tmp[0];
+        }
      }
-   g_lastHtfState = htfState;   // per dashboard
-   bool biasLong  = !InpUseBias || (htfState > 0.5);   // +1 = accetta BUY
-   bool biasShort = !InpUseBias || (htfState < -0.5);   // -1 = accetta SELL
+
+   g_lastHtfState = htfStateCurrent;   // per dashboard
+   bool biasLong  = !g_biasEnabled || (htfStateCurrent > 0.5);
+   bool biasShort = !g_biasEnabled || (htfStateCurrent < -0.5);
 
    for(int i = trail_start; i < rates_total; i++)
      {
@@ -1694,6 +1858,26 @@ int OnCalculate(const int rates_total,
 
       B_Trail[i]    = trail;
       B_TrailClr[i] = (src > trail) ? 0.0 : 1.0;
+
+      // [v3.50] Per-bar HTF bias durante fullRecalc.
+      // Sovrascrivi biasLong/biasShort con lo stato HTF al momento della barra i.
+      // iBarShift converte il tempo LTF nell'indice HTF. +1 = barra chiusa (anti-repainting).
+      // htfStateArr è in modalità series (indice 0 = barra più recente).
+      if(fullRecalc && htfAvailable && htfCopied > 0)
+        {
+         int htfShift = iBarShift(_Symbol, g_eff_biasTF, time[i]);
+         double htfBarState = 0.0;
+         // [v3.51 fix] iBarShift restituisce -1 se il tempo non è trovato:
+         // senza guard, htfIdx = -1+1 = 0 → legge barra formante → viola anti-repainting.
+         if(htfShift >= 0)
+           {
+            int htfIdx = htfShift + 1; // +1 = barra chiusa HTF (anti-repainting)
+            if(htfIdx < htfCopied)
+               htfBarState = htfStateArr[htfIdx];
+           }
+         biasLong  = !g_biasEnabled || (htfBarState > 0.5);
+         biasShort = !g_biasEnabled || (htfBarState < -0.5);
+        }
 
       // [v3.00] Efficiency Ratio windowed (Kaufman) su close[].
       // In v2.01 l'ER era calcolato solo per SRC_KAMA (proxy |delta_src|/ATR
@@ -1742,20 +1926,28 @@ int OnCalculate(const int rates_total,
                  && (erAvg < InpFlatERThresh);
       B_FlatState[i] = isFlat ? 0.0 : 1.0;
 
-      //--- Flat zone visualization ---
-      if(isFlat && InpShowFlatZone && InpFlatDetect)
+      //--- Flat zone visualization — Donchian orizzontale (v3.50) ---
+      // [v3.50] Il canale usa HH/LL persistenti dall'inizio della lateralità.
+      // Le bande sono ORIZZONTALI (si espandono solo se prezzo fa nuovo HH/LL).
+      // Alla fine della lateralità scompaiono istantaneamente (EMPTY_VALUE).
+      // [v3.51 fix] InpShowFlatZone → g_dash_vis_flatzone: rispetta toggle dashboard.
+      if(isFlat && g_dash_vis_flatzone && InpFlatDetect)
         {
-         // Calcola Upper/Lower del canale
-         double flatUpper, flatLower;
-         if(src > trail)
-           { flatUpper = trail + chWidth; flatLower = trail; }
-         else
-           { flatUpper = trail; flatLower = trail - chWidth; }
+         if(!g_wasFlatPrev)   // inizio nuova zona flat
+           {
+            g_flatRangeHigh = high[i];
+            g_flatRangeLow  = low[i];
+           }
+         else                 // flat continua — espandi range
+           {
+            if(high[i] > g_flatRangeHigh) g_flatRangeHigh = high[i];
+            if(low[i]  < g_flatRangeLow)  g_flatRangeLow  = low[i];
+           }
 
-         B_FlatFillUp[i] = flatUpper;
-         B_FlatFillDn[i] = flatLower;
-         B_FlatLineUp[i] = flatUpper;
-         B_FlatLineDn[i] = flatLower;
+         B_FlatFillUp[i] = g_flatRangeHigh;
+         B_FlatFillDn[i] = g_flatRangeLow;
+         B_FlatLineUp[i] = g_flatRangeHigh;
+         B_FlatLineDn[i] = g_flatRangeLow;
         }
       else
         {
@@ -1764,6 +1956,7 @@ int OnCalculate(const int rates_total,
          B_FlatLineUp[i] = EMPTY_VALUE;
          B_FlatLineDn[i] = EMPTY_VALUE;
         }
+      g_wasFlatPrev = isFlat;
 
       //--- ANTI-REPAINTING ---
       if(i < rates_total - 1)
@@ -1865,9 +2058,14 @@ int OnCalculate(const int rates_total,
          B_EntryLine[i] = g_entryLevel;
 
          //--- Stato posizione (per EA) ---
-         if(src1 < t1 && src > t1)
+         // [v3.52 fix] B_State rispetta il filtro bias HTF.
+         // In v3.51 il crossover raw (src vs t1) cambiava B_State anche quando
+         // il bias bloccava il segnale → l'EA chiudeva posizioni su pullback
+         // piccoli contro-trend mentre l'HTF era ancora in trending.
+         // Ora B_State cambia SOLO se isBuy/isSell sono effettivamente attivi.
+         if(isBuy)
             B_State[i] = 1.0;
-         else if(src1 > t1 && src < t1)
+         else if(isSell)
             B_State[i] = -1.0;
          else
             B_State[i] = B_State[i - 1];
