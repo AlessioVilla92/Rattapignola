@@ -10,7 +10,7 @@
 //|   - SRC_CLOSE: identico all'originale Pine Script (src = close)  |
 //|   - SRC_HMA:   Hull Moving Average (lag ridotto)                 |
 //|   - SRC_KAMA:  Kaufman Adaptive MA (anti-whipsaw nei range)      |
-//|   - SRC_JMA:   Jurik-style MA adattiva (quasi zero lag) [v2.00+]|
+//|   - SRC_JMA:   Jurik-style MA adattiva (quasi zero lag) [v2.00] |
 //|                                                                  |
 //| L'indicatore calcola un Trailing Stop basato su ATR che segue    |
 //| il prezzo: si alza progressivamente in uptrend (ratchet up) e    |
@@ -38,235 +38,80 @@
 //|   B_State per EA: confermato solo su barre chiuse.                |
 //|   Alert: già su barra chiusa (rates_total-2).                    |
 //|                                                                  |
-//| COMPONENTI VISIVE (13 plot, v3.00):                              |
-//|   Plot 0:  Linea trailing stop colorata (teal/coral)            |
-//|   Plot 1-3: Frecce BUY multi-ER (3/2/1 per forza segnale)      |
-//|   Plot 4-6: Frecce SELL multi-ER (3/2/1 per forza segnale)     |
-//|   Plot 7:  Caution marker (ER<0.15)                             |
-//|   Plot 8:  Entry level line (viola dash)                        |
-//|   Plot 9-11: Flat zone (fill blu + bordi bianco dot)            |
-//|   Plot 12: Candele colorate (teal/coral/giallo trigger)         |
+//| COMPONENTI VISIVE (5 plot, v2.00):                               |
+//|   Plot 0: Linea trailing stop colorata (teal bull / coral bear)  |
+//|   Plot 1: Freccia BUY ER-colorata (verde/chiaro/giallo/grigio)  |
+//|   Plot 2: Freccia SELL ER-colorata (rosso/arancio/giallo/grigio)|
+//|   Plot 3: Marker entry viola (quadratino al close trigger bar)  |
+//|   Plot 4: Candele colorate (teal/coral/giallo trigger)          |
 //|                                                                  |
-//| BUFFER ESPOSTI PER EA ESTERNI (v3.00):                           |
+//| BUFFER ESPOSTI PER EA ESTERNI (v2.00):                           |
+//|   Buffer 0:  valore trailing stop (prezzo)                       |
 //|   Buffer 2:  segnale BUY (prezzo freccia o EMPTY_VALUE)          |
-//|   Buffer 8:  segnale SELL (prezzo freccia o EMPTY_VALUE)         |
-//|   Buffer 26: Efficiency Ratio 0.0-1.0                            |
-//|   Buffer 27: stato posizione (+1.0 long, -1.0 short, 0 neutro)  |
-//|   Buffer 28: FlatState (1.0=active, 0.0=flat)                    |
-//|   Buffer 29: ChannelWidth (in prezzo)                             |
-//|                                                                  |
-//+------------------------------------------------------------------+
-//|                                                                  |
-//| CHANGELOG                                                        |
-//|                                                                  |
-//| v4.01 — Toggle CHAND sempre visibile + logico                    |
-//|   - Pulsante CHAND nel dashboard: sempre visibile (era nascosto  |
-//|     quando InpShowChandelier=false → impossibile attivarlo).     |
-//|   - Toggle CHAND ora è LOGICO (come BIAS): attiva/disattiva il   |
-//|     calcolo Chandelier + forza fullRecalc al prossimo tick.       |
-//|   - InpShowChandelier → g_dash_vis_chand nel loop calc e nella   |
-//|     barra corrente: il runtime toggle controlla il calcolo.       |
-//|   - InpShowChandelier rimane solo come valore iniziale in OnInit. |
-//|                                                                  |
-//| v4.00 — Chandelier Exit + BiasGate + BiasContra marker           |
-//|   - Chandelier Exit Anchored: overlay trailing (long/short)      |
-//|     HH/LL anchor resettato ad ogni crossover trail, ratchet,     |
-//|     vol normalization opzionale (avgATR/ATR). Plot 13-14.        |
-//|   - BiasGate (buffer 30 CALC): 1.0=con-bias, 0.0=contro-bias    |
-//|     per EA: apri solo su con-bias, chiudi su contro-bias.        |
-//|   - BiasContra marker ◆ (Plot 15 COLOR_ARROW): segnale visivo   |
-//|     su crossover bloccati dal bias HTF. Wingdings 169.           |
-//|   - Dashboard: pulsante CHAND (toggle visivo Plot 13-14).        |
-//|   - iCustom: 33 parametri (era 30), 3 nuovi Chandelier.         |
-//|   - FIX CRITICO (spec): g_chandLL init 0 → 999999 per           |
-//|     catturare correttamente i low iniziali.                      |
-//|   - Buffer 30-34, Plot 13-16, btnIds 7, MAX_ROWS 30.            |
-//|                                                                  |
-//| v3.52 — Bias HTF auto-preset + B_State bias-aware                |
-//|   - g_eff_biasTF: TF bias automatico per preset                  |
-//|     M1→M15, M5→M30, M15→H1, M30→H4, H1→H4, H4→D1              |
-//|     MANUAL: usa InpBiasTF dall'input utente                      |
-//|   - InpBiasTF → g_eff_biasTF in tutti i path runtime            |
-//|     (iCustom, iBars, iBarShift, dashboard)                       |
-//|   - Fix: B_State ora rispetta il filtro bias HTF                 |
-//|     Prima usava crossover raw (src vs t1): l'EA vedeva           |
-//|     cambio di stato su pullback piccoli contro-trend anche       |
-//|     quando l'HTF era in trending → chiusure inutili.             |
-//|     Ora B_State cambia SOLO con isBuy/isSell filtrati.           |
-//|                                                                  |
-//| v3.51 — Bugfix post-audit v3.50                                 |
-//|   - Fix: iBarShift -1 guard (anti-repainting HTF bias per-bar)  |
-//|     iBarShift ritorna -1 se tempo non trovato → htfIdx=0 →      |
-//|     leggeva barra formante. Aggiunto if(htfShift >= 0) guard.    |
-//|   - Fix: Donchian reset su OGNI fullRecalc (init, cambio TF)    |
-//|     Prima il reset g_wasFlatPrev/HH/LL era solo nel path        |
-//|     force-recalc → prima flat zone dopo load ereditava stantii.  |
-//|   - Fix: InpShowFlatZone → g_dash_vis_flatzone nel loop calc    |
-//|     Input immutabile ignorava toggle dashboard FLAT; buffer      |
-//|     restavano EMPTY_VALUE anche con toggle ON.                   |
-//|   - Fix: FLAT toggle OFF→ON resetta Donchian (g_wasFlatPrev,    |
-//|     g_flatRangeHigh/Low) per evitare range stantii ereditati     |
-//|     dal periodo flat precedente alla riattivazione.              |
-//|                                                                  |
-//| v3.50 — HTF bias per-bar + Donchian flat + dashboard toggles     |
-//|   - HTF bias per-bar con iBarShift (backtest visivo corretto)    |
-//|     CopyBuffer full solo in fullRecalc (performance fix)         |
-//|   - Flat zone: Donchian orizzontale (HH/LL persistenti)          |
-//|   - Dashboard: +2 pulsanti toggle (FLAT visivo, BIAS logico)     |
-//|   - BIAS toggle: force-recalc tutte le frecce + reset Donchian   |
-//|   - Handle HTF sempre creato (toggle indipendente da input)      |
-//|   - Preset FlatMinWidth ridotti per reattivita migliorata        |
-//|   - Button pool 4→6 (fix: FLAT+BIAS non cliccabili)             |
-//|   - Bias dashboard 3 stati: ON/OFF(toggle)/N/A(stesso TF)       |
-//|                                                                  |
-//| v3.01 — Dashboard trading avanzata + bugfix                      |
-//|   - Dashboard: +4 righe live (ATR pips, Entry P/L, Ultimo        |
-//|     Segnale con barre fa, Spread con colore semaforo)            |
-//|   - UTB_DASH_MAX_ROWS 20→24 per ospitare le nuove righe         |
-//|   - Bugfix: g_dash_vis_trail sincronizzato con InpShowTrailLine  |
-//|     (prima restava true anche in embed mode EA)                  |
-//|   - Bugfix: scan segnale dashboard usava MathMax(0,...) che      |
-//|     leggeva barre warmup (B_Buy1=0.0 != EMPTY_VALUE) → falso    |
-//|     positivo. Fix: MathMax(g_warmup,...) evita zona non scritta  |
-//|   - Bugfix: InpFlatERBars=0 causava 0.0/0→NaN, flat detection   |
-//|     silenziosamente disabilitata. Fix: MathMax(InpFlatERBars,1)  |
-//|                                                                  |
-//| v3.00 — Upgrade strutturale da v2.01                             |
-//|   - 14→30 buffer, 5→13 plot                                     |
-//|   - Frecce multi-ER: 3/2/1+caution per forza segnale            |
-//|     (ER>=0.60→3 frecce, >=0.35→2, >=0.15→1, <0.15→1+quadrato)  |
-//|   - ER windowed Kaufman su close[] per TUTTE le sorgenti         |
-//|     (era proxy |delta_src|/ATR per non-KAMA — impreciso)         |
-//|   - Preset sorgente auto per TF: g_eff_srcType                  |
-//|     (M1/M30/H1/H4→JMA, M5/M15→KAMA)                            |
-//|   - Flat detection: chWidth<minWidth && erAvg<threshold          |
-//|     → blocca segnali in lateralita, canale blu visivo            |
-//|   - Buffer esposti per EA: FlatState(28), ChWidth(29)            |
-//|   - B_Buy→B_Buy1, B_Sell→B_Sell1 (rename per multi-frecce)      |
-//|   - OnChartEvent: plot index aggiornati (ARROWS 1-7, ENTRY 8,   |
-//|     CANDLES 12) — fix NON presente nella specifica originale     |
-//|   - iCustom HTF: 30 parametri, nome self-reference V1            |
-//|   - CopyBuffer HTF: buffer 13→27 per B_State                    |
-//|   - Dashboard: regime FLAT/ACTIVE, ChWidth in pips               |
-//|   - InpSrcType→g_eff_srcType in short name, Print, dashboard    |
+//|   Buffer 4:  segnale SELL (prezzo freccia o EMPTY_VALUE)         |
+//|   Buffer 12: Efficiency Ratio 0.0-1.0                            |
+//|   Buffer 13: stato posizione (+1.0 long, -1.0 short, 0 neutro)  |
 //|                                                                  |
 //+------------------------------------------------------------------+
 #property copyright "Alessio / AcquaDulza ecosystem"
-#property version   "4.01"
-#property description "UT Bot Alerts — KAMA/HMA/JMA + anti-repainting + frecce multi-ER"
-#property description "v4.01: toggle CHAND da dashboard sempre visibile e logico"
-#property description "BUY/SELL su barre chiuse. Canale laterale blu. Entry marker viola."
+#property version   "2.01"
+#property description "UT Bot Alerts — KAMA/HMA/JMA + anti-repainting + ER-colors"
+#property description "v2.00: frecce ER-colorate, marker viola entrata, JMA adattiva, candela trigger gialla"
+#property description "BUY/SELL su barre chiuse. Trigger bar = gialla. Entry marker = viola al close."
 #property indicator_chart_window
-#property indicator_buffers 35
-#property indicator_plots   16
+#property indicator_buffers 14
+#property indicator_plots   5
 
 //+------------------------------------------------------------------+
-//| DEFINIZIONE DEI 13 PLOT (v3.00)                                  |
+//| DEFINIZIONE DEI 5 PLOT (v2.00)                                   |
 //+------------------------------------------------------------------+
 
 // --- Plot 0: Trailing Stop Line ---
+// DRAW_COLOR_LINE con 2 colori: indice 0 = teal (bull), indice 1 = coral (bear)
 #property indicator_label1  "Trail Stop"
 #property indicator_type1   DRAW_COLOR_LINE
 #property indicator_color1  C'38,166,154', C'239,83,80'
 #property indicator_style1  STYLE_SOLID
 #property indicator_width1  2
 
-// --- Plot 1: Freccia BUY primaria (sempre visibile su segnale) ---
-#property indicator_label2  "Buy1"
+// --- Plot 1: Freccia BUY — DRAW_COLOR_ARROW, 4 livelli ER ---
+// Indice 0: verde pieno C'76,175,80'    ER>=0.60 — segnale affidabile
+// Indice 1: verde chiar C'139,195,74'   ER 0.35-0.59 — moderato
+// Indice 2: giallo      C'255,193,7'    ER 0.15-0.34 — debole
+// Indice 3: grigio      C'120,120,120'  ER<0.15 — ranging, massima cautela
+#property indicator_label2  "Buy"
 #property indicator_type2   DRAW_COLOR_ARROW
-#property indicator_color2  C'76,175,80', C'139,195,74', C'255,193,7', C'255,152,0'
+#property indicator_color2  C'76,175,80', C'139,195,74', C'255,193,7', C'120,120,120'
 #property indicator_width2  2
 
-// --- Plot 2: Freccia BUY secondaria (ER >= 0.35) ---
-#property indicator_label3  "Buy2"
+// --- Plot 2: Freccia SELL — DRAW_COLOR_ARROW, 4 livelli ER ---
+// Indice 0: rosso pieno  C'239,83,80'    ER>=0.60
+// Indice 1: arancione    C'255,138,101'  ER 0.35-0.59
+// Indice 2: giallo       C'255,193,7'    ER 0.15-0.34
+// Indice 3: grigio       C'120,120,120'  ER<0.15
+#property indicator_label3  "Sell"
 #property indicator_type3   DRAW_COLOR_ARROW
-#property indicator_color3  C'76,175,80', C'139,195,74'
+#property indicator_color3  C'239,83,80', C'255,138,101', C'255,193,7', C'120,120,120'
 #property indicator_width3  2
 
-// --- Plot 3: Freccia BUY terziaria (ER >= 0.60) ---
-#property indicator_label4  "Buy3"
-#property indicator_type4   DRAW_COLOR_ARROW
-#property indicator_color4  C'76,175,80'
-#property indicator_width4  2
+// --- Plot 3: Entry Level Line — linea orizzontale viola al livello di entrata ---
+// Linea DASH al prezzo di chiusura della barra trigger. Si estende
+// orizzontalmente fino al prossimo segnale BUY o SELL.
+#property indicator_label4  "Entry Level"
+#property indicator_type4   DRAW_LINE
+#property indicator_color4  C'148,0,211'
+#property indicator_style4  STYLE_DASH
+#property indicator_width4  1
 
-// --- Plot 4: Freccia SELL primaria (sempre visibile su segnale) ---
-#property indicator_label5  "Sell1"
-#property indicator_type5   DRAW_COLOR_ARROW
-#property indicator_color5  C'239,83,80', C'255,138,101', C'255,193,7', C'255,152,0'
-#property indicator_width5  2
-
-// --- Plot 5: Freccia SELL secondaria (ER >= 0.35) ---
-#property indicator_label6  "Sell2"
-#property indicator_type6   DRAW_COLOR_ARROW
-#property indicator_color6  C'239,83,80', C'255,138,101'
-#property indicator_width6  2
-
-// --- Plot 6: Freccia SELL terziaria (ER >= 0.60) ---
-#property indicator_label7  "Sell3"
-#property indicator_type7   DRAW_COLOR_ARROW
-#property indicator_color7  C'239,83,80'
-#property indicator_width7  2
-
-// --- Plot 7: Caution marker (ER < 0.15) ---
-#property indicator_label8  "Caution"
-#property indicator_type8   DRAW_COLOR_ARROW
-#property indicator_color8  C'255,152,0', C'255,100,100'
-#property indicator_width8  1
-
-// --- Plot 8: Entry Level Line (viola dash) ---
-#property indicator_label9  "Entry Level"
-#property indicator_type9   DRAW_LINE
-#property indicator_color9  C'148,0,211'
-#property indicator_style9  STYLE_DASH
-#property indicator_width9  1
-
-// --- Plot 9: Flat Zone Fill (DRAW_FILLING tra Upper e Lower) ---
-#property indicator_label10 "Flat Zone"
-#property indicator_type10  DRAW_FILLING
-#property indicator_color10 C'40,100,200', C'40,100,200'
-
-// --- Plot 10: Flat Zone Upper Line (bianca tratteggiata) ---
-#property indicator_label11 "Flat Upper"
-#property indicator_type11  DRAW_LINE
-#property indicator_color11 C'180,200,230'
-#property indicator_style11 STYLE_DOT
-#property indicator_width11 1
-
-// --- Plot 11: Flat Zone Lower Line (bianca tratteggiata) ---
-#property indicator_label12 "Flat Lower"
-#property indicator_type12  DRAW_LINE
-#property indicator_color12 C'180,200,230'
-#property indicator_style12 STYLE_DOT
-#property indicator_width12 1
-
-// --- Plot 12: Candele colorate — 3 colori (NO grigio) ---
-// Indice 0: teal   C'38,166,154'   candela bull
-// Indice 1: coral  C'239,83,80'    candela bear
-// Indice 2: giallo C'255,235,59'   candela TRIGGER
-#property indicator_label13 "Candles"
-#property indicator_type13  DRAW_COLOR_CANDLES
-#property indicator_color13 C'38,166,154', C'239,83,80', C'255,235,59'
-#property indicator_width13 1
-
-// --- Plot 13: Chandelier Long (verde tratteggiata sotto prezzo) ---
-#property indicator_label14 "Chand Long"
-#property indicator_type14  DRAW_LINE
-#property indicator_color14 C'50,200,120'
-#property indicator_style14 STYLE_DASH
-#property indicator_width14 1
-
-// --- Plot 14: Chandelier Short (rossa tratteggiata sopra prezzo) ---
-#property indicator_label15 "Chand Short"
-#property indicator_type15  DRAW_LINE
-#property indicator_color15 C'239,100,100'
-#property indicator_style15 STYLE_DASH
-#property indicator_width15 1
-
-// --- Plot 15: Bias Contra marker ◆ (segnale contro-bias) ---
-#property indicator_label16 "Bias Contra"
-#property indicator_type16  DRAW_COLOR_ARROW
-#property indicator_color16 C'100,100,180', C'180,100,100'
-#property indicator_width16 1
+// --- Plot 4: Candele colorate — 3 colori ---
+// Indice 0: teal   C'38,166,154'   candela bull normale
+// Indice 1: coral  C'239,83,80'    candela bear normale
+// Indice 2: giallo C'255,235,59'   candela TRIGGER (barra che genera BUY o SELL)
+// CHART_FOREGROUND=false richiesto per mostrare le candele sopra quelle native.
+#property indicator_label5  "Candles"
+#property indicator_type5   DRAW_COLOR_CANDLES
+#property indicator_color5  C'38,166,154', C'239,83,80', C'255,235,59'
+#property indicator_width5  1
 
 //+------------------------------------------------------------------+
 //| ENUM — Preset Timeframe                                          |
@@ -343,36 +188,11 @@ input group "╔═════════════════════�
 input group "║  📡 FILTRO BIAS HTF                                      ║"
 input group "╚═══════════════════════════════════════════════════════════╝"
 
-// Legge B_State (buffer 27) dello stesso indicatore su TF superiore.
+// Legge B_State (buffer 13) dello stesso indicatore su TF superiore.
 // BUY accettato solo se HTF_state=+1. SELL solo se HTF_state=-1.
 // Non attivare se TF chart >= InpBiasTF (evita ricorsione).
 input bool            InpUseBias     = false;       // Attiva filtro bias HTF
 input ENUM_TIMEFRAMES InpBiasTF      = PERIOD_H1;   // Timeframe del bias (default H1)
-
-input group "                                                               "
-input group "╔═══════════════════════════════════════════════════════════╗"
-input group "║  📐 RILEVAMENTO LATERALITÀ                               ║"
-input group "╚═══════════════════════════════════════════════════════════╝"
-
-// [v3.00] Gruppo nuovo: rileva zone di lateralita (flat/ranging).
-// Doppia condizione: canale stretto (chWidth < minWidth) E ER medio basso.
-// Quando isFlat=true, i segnali BUY/SELL vengono bloccati (FLAT gate)
-// e il canale viene visualizzato in blu sul chart (DRAW_FILLING).
-// InpFlatMinWidth=0 usa il valore auto dal preset TF (g_eff_flatMinWidth).
-input bool            InpFlatDetect     = true;    // Attiva rilevamento zona FLAT
-input double          InpFlatMinWidth   = 0.0;     // Min Channel Width pips (0=auto-preset)
-input double          InpFlatERThresh   = 0.20;    // ER medio soglia per FLAT
-input int             InpFlatERBars     = 8;       // Barre per media ER
-input bool            InpShowFlatZone   = true;    // Mostra zona FLAT (canale blu)
-
-input group "                                                               "
-input group "╔═══════════════════════════════════════════════════════════╗"
-input group "║  📏 CHANDELIER EXIT OVERLAY                              ║"
-input group "╚═══════════════════════════════════════════════════════════╝"
-
-input bool            InpShowChandelier = false;     // Mostra Chandelier Exit (overlay)
-input double          InpChandMult      = 2.5;       // Chandelier ATR multiplier
-input bool            InpChandVolNorm   = true;      // Normalizzazione volatilità ATR
 
 input group "                                                               "
 input group "╔═══════════════════════════════════════════════════════════╗"
@@ -417,66 +237,32 @@ input bool            InpShowDashboard  = true;  // Mostra dashboard interna (of
 input bool            InpShowTrailLine  = true;  // Mostra trail line Plot 0 (off da EA host)
 
 //+------------------------------------------------------------------+
-//| BUFFER — 30 buffer totali, 13 plot (v3.00)                      |
+//| BUFFER — 14 buffer totali, 5 plot (v2.00)                       |
 //+------------------------------------------------------------------+
-// Plot 0:  Buf 0-1   DRAW_COLOR_LINE    Trail stop + color
-// Plot 1:  Buf 2-3   DRAW_COLOR_ARROW   Buy1 (primaria) + color
-// Plot 2:  Buf 4-5   DRAW_COLOR_ARROW   Buy2 (secondaria) + color
-// Plot 3:  Buf 6-7   DRAW_COLOR_ARROW   Buy3 (terziaria) + color
-// Plot 4:  Buf 8-9   DRAW_COLOR_ARROW   Sell1 (primaria) + color
-// Plot 5:  Buf 10-11 DRAW_COLOR_ARROW   Sell2 (secondaria) + color
-// Plot 6:  Buf 12-13 DRAW_COLOR_ARROW   Sell3 (terziaria) + color
-// Plot 7:  Buf 14-15 DRAW_COLOR_ARROW   Caution ■ + color
-// Plot 8:  Buf 16    DRAW_LINE          Entry level (viola dash)
-// Plot 9:  Buf 17-18 DRAW_FILLING       Flat zone fill (Upper+Lower)
-// Plot 10: Buf 19    DRAW_LINE          Flat Upper line (bianca dot)
-// Plot 11: Buf 20    DRAW_LINE          Flat Lower line (bianca dot)
-// Plot 12: Buf 21-25 DRAW_COLOR_CANDLES OHLC + color
-// ---     Buf 26    CALCULATIONS       ER
-// ---     Buf 27    CALCULATIONS       State (+1/-1/0)
-// ---     Buf 28    CALCULATIONS       FlatState (1=active, 0=flat)
-// ---     Buf 29    CALCULATIONS       ChannelWidth (2*nLoss)
+// Buf 0-1:  Plot 0 DRAW_COLOR_LINE    Trail stop + color
+// Buf 2-3:  Plot 1 DRAW_COLOR_ARROW   BUY + ER color index (0-3)
+// Buf 4-5:  Plot 2 DRAW_COLOR_ARROW   SELL + ER color index (0-3)
+// Buf 6:    Plot 3 DRAW_LINE          Entry level line (viola, STYLE_DASH)
+// Buf 7-11: Plot 4 DRAW_COLOR_CANDLES OHLC + color (0=teal,1=coral,2=giallo)
+// Buf 12:   CALCULATIONS              Efficiency Ratio 0.0-1.0 (per EA)
+// Buf 13:   CALCULATIONS              Stato posizione +1/-1/0 (per EA)
 //
-// EA extern: CopyBuffer(h, 2,..)  Buy1  | CopyBuffer(h, 8,..)  Sell1
-//            CopyBuffer(h, 26,..) ER    | CopyBuffer(h, 27,..) State
-//            CopyBuffer(h, 28,..) Flat  | CopyBuffer(h, 29,..) ChWidth
-
+// EA extern: CopyBuffer(h,2,..) BUY | CopyBuffer(h,4,..) SELL
+//            CopyBuffer(h,12,..) ER | CopyBuffer(h,13,..) State
 double B_Trail[];       // buffer 0
-double B_TrailClr[];    // buffer 1
-double B_Buy1[];        // buffer 2  — freccia BUY primaria
-double B_Buy1Clr[];     // buffer 3
-double B_Buy2[];        // buffer 4  — freccia BUY secondaria (ER>=0.35)
-double B_Buy2Clr[];     // buffer 5
-double B_Buy3[];        // buffer 6  — freccia BUY terziaria (ER>=0.60)
-double B_Buy3Clr[];     // buffer 7
-double B_Sell1[];       // buffer 8  — freccia SELL primaria
-double B_Sell1Clr[];    // buffer 9
-double B_Sell2[];       // buffer 10 — freccia SELL secondaria (ER>=0.35)
-double B_Sell2Clr[];    // buffer 11
-double B_Sell3[];       // buffer 12 — freccia SELL terziaria (ER>=0.60)
-double B_Sell3Clr[];    // buffer 13
-double B_Caution[];     // buffer 14 — quadratino cautela (ER<0.15)
-double B_CautionClr[];  // buffer 15
-double B_EntryLine[];   // buffer 16
-double B_FlatFillUp[];  // buffer 17 — DRAW_FILLING upper
-double B_FlatFillDn[];  // buffer 18 — DRAW_FILLING lower
-double B_FlatLineUp[];  // buffer 19 — Flat upper line
-double B_FlatLineDn[];  // buffer 20 — Flat lower line
-double B_CO[];          // buffer 21
-double B_CH[];          // buffer 22
-double B_CL[];          // buffer 23
-double B_CC[];          // buffer 24
-double B_CClr[];        // buffer 25
-double B_ER[];          // buffer 26 (CALCULATIONS)
-double B_State[];       // buffer 27 (CALCULATIONS)
-double B_FlatState[];   // buffer 28 (CALCULATIONS) 1.0=active, 0.0=flat
-double B_ChWidth[];     // buffer 29 (CALCULATIONS) channel width
-// [v4.00] Nuovi buffer: BiasGate (CALC), Chandelier (DATA×2), BiasContra (COLOR_ARROW)
-double B_BiasGate[];     // buffer 30 (CALC) 1.0=con-bias, 0.0=contro-bias, EMPTY=no signal
-double B_ChandLong[];    // buffer 31 (Plot 13) Chandelier trailing long
-double B_ChandShort[];   // buffer 32 (Plot 14) Chandelier trailing short
-double B_BiasContra[];   // buffer 33 (Plot 15) marker ◆ contro-bias
-double B_BiasContraClr[];// buffer 34 (Plot 15 COLOR)
+double B_TrailClr[];    // buffer 1 (COLOR_INDEX)
+double B_Buy[];         // buffer 2
+double B_BuyClr[];      // buffer 3 (COLOR_INDEX: 0=verde,1=v.chiaro,2=giallo,3=grigio)
+double B_Sell[];        // buffer 4
+double B_SellClr[];     // buffer 5 (COLOR_INDEX: 0=rosso,1=arancio,2=giallo,3=grigio)
+double B_EntryLine[];   // buffer 6 (livello entrata continuo — linea viola dash)
+double B_CO[];          // buffer 7
+double B_CH[];          // buffer 8
+double B_CL[];          // buffer 9
+double B_CC[];          // buffer 10
+double B_CClr[];        // buffer 11 (COLOR_INDEX: 0=teal,1=coral,2=giallo trigger)
+double B_ER[];          // buffer 12 (CALCULATIONS) Efficiency Ratio per EA
+double B_State[];       // buffer 13 (CALCULATIONS) +1.0/-1.0/0.0 per EA
 
 //+------------------------------------------------------------------+
 //| Variabili interne                                                |
@@ -501,15 +287,6 @@ int    g_eff_kamaFast;   // KAMA Fast EMA effettivo
 int    g_eff_kamaSlow;   // KAMA Slow EMA effettivo
 int    g_eff_jmaPeriod;  // JMA Period effettivo
 int    g_eff_jmaPhase;   // JMA Phase effettivo (-100..100)
-
-// --- Preset sorgente auto (v3.00) ---
-ENUM_SRC_TYPE g_eff_srcType;    // SrcType effettivo (overridato da preset AUTO)
-
-// --- Flat detection (v3.00) ---
-double g_eff_flatMinWidth;       // MinWidth effettivo (auto-preset o manuale)
-
-// --- Bias HTF auto-preset (v3.52) ---
-ENUM_TIMEFRAMES g_eff_biasTF;   // TF bias effettivo (overridato da preset AUTO)
 
 // --- Stato interno JMA (persistente tra chiamate OnCalculate) ---
 // Formula completa con Jurik Bands + volatilita dinamica.
@@ -548,35 +325,15 @@ int    g_origShowVolumes = 0;
 bool   g_origForeground  = true;
 bool   g_themeApplied    = false;
 
-//--- Dashboard (v3.00) ---
+//--- Dashboard (v2.00) ---
 bool   g_dash_vis_trail   = true;   // Trail Stop line
 bool   g_dash_vis_arrows  = true;   // Frecce BUY/SELL
 bool   g_dash_vis_entry   = true;   // Entry marker viola
 bool   g_dash_vis_candles = true;   // Candele colorate
-bool   g_dash_vis_flatzone = true;  // [v3.50] Flat zone visibilità (toggle dashboard)
-bool   g_dash_vis_bias     = true;  // [v3.50] Bias HTF attivo (toggle logico dashboard)
 string UTB_DASH_PREFIX = "UTB_DASH_";
-#define UTB_DASH_MAX_ROWS 30        // [v3.50] era 24, +4 per pulsanti FLAT+BIAS + margine
+#define UTB_DASH_MAX_ROWS 20
 double g_lastHtfState     = 0.0;    // HTF state per dashboard
 int    g_dash_ratesTotal  = 0;      // rates_total dall'ultimo OnCalculate
-
-// --- HTF Bias runtime toggle (v3.50) ---
-bool   g_biasEnabled;               // runtime toggle (init da InpUseBias)
-int    g_forceRecalcCounter = 0;    // incrementato da OnChartEvent per forzare fullRecalc
-
-// --- Flat zone Donchian (v3.50) ---
-double g_flatRangeHigh;             // HH dall'inizio della flat zone
-double g_flatRangeLow;              // LL dall'inizio della flat zone
-bool   g_wasFlatPrev;               // isFlat della barra precedente
-
-// --- Chandelier state (v4.00) ---
-double g_chandHH;                // Highest High dal segnale (anchor)
-double g_chandLL;                // Lowest Low dal segnale (anchor)
-double g_chandLastLong;          // ultimo valore Chandelier Long (ratchet up)
-double g_chandLastShort;         // ultimo valore Chandelier Short (ratchet down)
-
-// --- Dashboard vis toggle (v4.00) ---
-bool   g_dash_vis_chand = true;  // Chandelier visibilità
 
 //+------------------------------------------------------------------+
 //| UTBotPresetsInit — Applica preset TF ai parametri effettivi      |
@@ -629,104 +386,79 @@ void UTBotPresetsInit()
      }
 
    //--- Applica i valori del preset selezionato
-   //--- Ogni case imposta: Key, ATR, SrcType, KAMA, JMA, FlatMinWidth
+   //--- Ogni case imposta 5 parametri: Key, ATR, KAMA N/Fast/Slow
    switch(preset)
      {
       case TF_PRESET_UT_M1:
-         g_eff_keyValue    = 0.7;
-         g_eff_atrPeriod   = 5;
-         g_eff_srcType     = SRC_JMA;
-         g_eff_kamaN       = 5;
-         g_eff_kamaFast    = 2;
-         g_eff_kamaSlow    = 20;
-         g_eff_jmaPeriod   = 5;
-         g_eff_jmaPhase    = 0;
-         g_eff_flatMinWidth = 2.0;   // pips
-         g_eff_biasTF      = PERIOD_M15;  // [v3.52] Bias HTF auto
+         g_eff_keyValue  = 0.7;
+         g_eff_atrPeriod = 5;
+         g_eff_kamaN     = 5;
+         g_eff_kamaFast  = 2;
+         g_eff_kamaSlow  = 20;
+         g_eff_jmaPeriod = 5;    // M1: reattivo ai micro-trend
+         g_eff_jmaPhase  = 0;    // bilanciato (phase>0 causa overshoot su M1)
          break;
 
       case TF_PRESET_UT_M5:
-         g_eff_keyValue    = 1.0;
-         g_eff_atrPeriod   = 7;
-         g_eff_srcType     = SRC_KAMA;    // KAMA su M5
-         g_eff_kamaN       = 8;
-         g_eff_kamaFast    = 2;
-         g_eff_kamaSlow    = 20;
-         g_eff_jmaPeriod   = 8;
-         g_eff_jmaPhase    = 0;
-         g_eff_flatMinWidth = 3.5;
-         g_eff_biasTF      = PERIOD_M30;  // [v3.52] Bias HTF auto
+         g_eff_keyValue  = 1.0;
+         g_eff_atrPeriod = 7;
+         g_eff_kamaN     = 8;
+         g_eff_kamaFast  = 2;
+         g_eff_kamaSlow  = 20;
+         g_eff_jmaPeriod = 8;    // M5: ~40 minuti di lookback
+         g_eff_jmaPhase  = 0;    // bilanciato
          break;
 
       case TF_PRESET_UT_M15:
-         g_eff_keyValue    = 1.2;
-         g_eff_atrPeriod   = 10;
-         g_eff_srcType     = SRC_KAMA;    // KAMA su M15 (filtro naturale)
-         g_eff_kamaN       = 10;
-         g_eff_kamaFast    = 2;
-         g_eff_kamaSlow    = 30;
-         g_eff_jmaPeriod   = 14;
-         g_eff_jmaPhase    = 0;
-         g_eff_flatMinWidth = 6.0;
-         g_eff_biasTF      = PERIOD_H1;   // [v3.52] Bias HTF auto
+         g_eff_keyValue  = 1.2;
+         g_eff_atrPeriod = 10;
+         g_eff_kamaN     = 10;
+         g_eff_kamaFast  = 2;
+         g_eff_kamaSlow  = 30;
+         g_eff_jmaPeriod = 14;   // M15: periodo standard (14 periodi = 3.5 ore)
+         g_eff_jmaPhase  = 0;    // bilanciato
          break;
 
       case TF_PRESET_UT_M30:
-         g_eff_keyValue    = 1.5;
-         g_eff_atrPeriod   = 10;
-         g_eff_srcType     = SRC_JMA;     // JMA su M30 (zero lag, TF già filtrato)
-         g_eff_kamaN       = 10;
-         g_eff_kamaFast    = 2;
-         g_eff_kamaSlow    = 30;
-         g_eff_jmaPeriod   = 18;
-         g_eff_jmaPhase    = 50;
-         g_eff_flatMinWidth = 10.0;
-         g_eff_biasTF      = PERIOD_H4;   // [v3.52] Bias HTF auto
+         g_eff_keyValue  = 1.5;
+         g_eff_atrPeriod = 10;
+         g_eff_kamaN     = 10;
+         g_eff_kamaFast  = 2;
+         g_eff_kamaSlow  = 30;
+         g_eff_jmaPeriod = 18;   // M30: distinto da M15, copre 9 ore (>1 sessione)
+         g_eff_jmaPhase  = 50;   // M30: phase positiva, meno lag sullo swing
          break;
 
       case TF_PRESET_UT_H1:
-         g_eff_keyValue    = 2.0;
-         g_eff_atrPeriod   = 14;
-         g_eff_srcType     = SRC_JMA;
-         g_eff_kamaN       = 14;
-         g_eff_kamaFast    = 2;
-         g_eff_kamaSlow    = 35;
-         g_eff_jmaPeriod   = 20;
-         g_eff_jmaPhase    = 50;
-         g_eff_flatMinWidth = 15.0;
-         g_eff_biasTF      = PERIOD_H4;   // [v3.52] Bias HTF auto
+         g_eff_keyValue  = 2.0;
+         g_eff_atrPeriod = 14;
+         g_eff_kamaN     = 14;
+         g_eff_kamaFast  = 2;
+         g_eff_kamaSlow  = 35;
+         g_eff_jmaPeriod = 20;
+         g_eff_jmaPhase  = 50;   // H1: trend following, phase positiva
          break;
 
       case TF_PRESET_UT_H4:
-         g_eff_keyValue    = 2.5;
-         g_eff_atrPeriod   = 14;
-         g_eff_srcType     = SRC_JMA;
-         g_eff_kamaN       = 14;
-         g_eff_kamaFast    = 2;
-         g_eff_kamaSlow    = 40;
-         g_eff_jmaPeriod   = 28;
-         g_eff_jmaPhase    = 75;
-         g_eff_flatMinWidth = 20.0;
-         g_eff_biasTF      = PERIOD_D1;   // [v3.52] Bias HTF auto
+         g_eff_keyValue  = 2.5;
+         g_eff_atrPeriod = 14;
+         g_eff_kamaN     = 14;
+         g_eff_kamaFast  = 2;
+         g_eff_kamaSlow  = 40;
+         g_eff_jmaPeriod = 28;
+         g_eff_jmaPhase  = 75;   // H4: trend following, overshoot contenuto (Jurik demo=50)
          break;
 
-      default: // MANUAL
-         g_eff_keyValue    = InpKeyValue;
-         g_eff_atrPeriod   = InpATRPeriod;
-         g_eff_srcType     = InpSrcType;  // utente decide
-         g_eff_kamaN       = InpKAMA_N;
-         g_eff_kamaFast    = InpKAMA_Fast;
-         g_eff_kamaSlow    = InpKAMA_Slow;
-         g_eff_jmaPeriod   = InpJMA_Period;
-         g_eff_jmaPhase    = InpJMA_Phase;
-         g_eff_flatMinWidth = (InpFlatMinWidth > 0.0) ? InpFlatMinWidth : 8.0;
-         g_eff_biasTF      = InpBiasTF;   // [v3.52] MANUAL: utente decide
+      default: // MANUAL — l'utente controlla tutto
+         g_eff_keyValue  = InpKeyValue;
+         g_eff_atrPeriod = InpATRPeriod;
+         g_eff_kamaN     = InpKAMA_N;
+         g_eff_kamaFast  = InpKAMA_Fast;
+         g_eff_kamaSlow  = InpKAMA_Slow;
+         g_eff_jmaPeriod = InpJMA_Period;
+         g_eff_jmaPhase  = InpJMA_Phase;
          break;
      }
-
-   // Override FlatMinWidth da input se l'utente l'ha specificato (> 0)
-   if(InpFlatMinWidth > 0.0)
-      g_eff_flatMinWidth = InpFlatMinWidth;
   }
 
 //+------------------------------------------------------------------+
@@ -737,101 +469,51 @@ int OnInit()
    //--- Preset TF (PRIMA di tutto: determina g_eff_keyValue e g_eff_atrPeriod)
    UTBotPresetsInit();
 
-   //--- Binding buffer v3.00 (30 buffer, 13 plot)
-   SetIndexBuffer(0,  B_Trail,      INDICATOR_DATA);
-   SetIndexBuffer(1,  B_TrailClr,   INDICATOR_COLOR_INDEX);
-   SetIndexBuffer(2,  B_Buy1,       INDICATOR_DATA);
-   SetIndexBuffer(3,  B_Buy1Clr,    INDICATOR_COLOR_INDEX);
-   SetIndexBuffer(4,  B_Buy2,       INDICATOR_DATA);
-   SetIndexBuffer(5,  B_Buy2Clr,    INDICATOR_COLOR_INDEX);
-   SetIndexBuffer(6,  B_Buy3,       INDICATOR_DATA);
-   SetIndexBuffer(7,  B_Buy3Clr,    INDICATOR_COLOR_INDEX);
-   SetIndexBuffer(8,  B_Sell1,      INDICATOR_DATA);
-   SetIndexBuffer(9,  B_Sell1Clr,   INDICATOR_COLOR_INDEX);
-   SetIndexBuffer(10, B_Sell2,      INDICATOR_DATA);
-   SetIndexBuffer(11, B_Sell2Clr,   INDICATOR_COLOR_INDEX);
-   SetIndexBuffer(12, B_Sell3,      INDICATOR_DATA);
-   SetIndexBuffer(13, B_Sell3Clr,   INDICATOR_COLOR_INDEX);
-   SetIndexBuffer(14, B_Caution,    INDICATOR_DATA);
-   SetIndexBuffer(15, B_CautionClr, INDICATOR_COLOR_INDEX);
-   SetIndexBuffer(16, B_EntryLine,  INDICATOR_DATA);
-   SetIndexBuffer(17, B_FlatFillUp, INDICATOR_DATA);
-   SetIndexBuffer(18, B_FlatFillDn, INDICATOR_DATA);
-   SetIndexBuffer(19, B_FlatLineUp, INDICATOR_DATA);
-   SetIndexBuffer(20, B_FlatLineDn, INDICATOR_DATA);
-   SetIndexBuffer(21, B_CO,         INDICATOR_DATA);
-   SetIndexBuffer(22, B_CH,         INDICATOR_DATA);
-   SetIndexBuffer(23, B_CL,         INDICATOR_DATA);
-   SetIndexBuffer(24, B_CC,         INDICATOR_DATA);
-   SetIndexBuffer(25, B_CClr,       INDICATOR_COLOR_INDEX);
-   SetIndexBuffer(26, B_ER,         INDICATOR_CALCULATIONS);
-   SetIndexBuffer(27, B_State,      INDICATOR_CALCULATIONS);
-   SetIndexBuffer(28, B_FlatState,  INDICATOR_CALCULATIONS);
-   SetIndexBuffer(29, B_ChWidth,    INDICATOR_CALCULATIONS);
-   // [v4.00] Nuovi buffer: BiasGate, Chandelier, BiasContra
-   SetIndexBuffer(30, B_BiasGate,      INDICATOR_CALCULATIONS);
-   SetIndexBuffer(31, B_ChandLong,     INDICATOR_DATA);
-   SetIndexBuffer(32, B_ChandShort,    INDICATOR_DATA);
-   SetIndexBuffer(33, B_BiasContra,    INDICATOR_DATA);
-   SetIndexBuffer(34, B_BiasContraClr, INDICATOR_COLOR_INDEX);
+   //--- Binding buffer v2.00 (14 buffer, 5 plot)
+   SetIndexBuffer(0,  B_Trail,     INDICATOR_DATA);
+   SetIndexBuffer(1,  B_TrailClr,  INDICATOR_COLOR_INDEX);
+   SetIndexBuffer(2,  B_Buy,       INDICATOR_DATA);
+   SetIndexBuffer(3,  B_BuyClr,    INDICATOR_COLOR_INDEX);
+   SetIndexBuffer(4,  B_Sell,      INDICATOR_DATA);
+   SetIndexBuffer(5,  B_SellClr,   INDICATOR_COLOR_INDEX);
+   SetIndexBuffer(6,  B_EntryLine, INDICATOR_DATA);
+   SetIndexBuffer(7,  B_CO,        INDICATOR_DATA);
+   SetIndexBuffer(8,  B_CH,        INDICATOR_DATA);
+   SetIndexBuffer(9,  B_CL,        INDICATOR_DATA);
+   SetIndexBuffer(10, B_CC,        INDICATOR_DATA);
+   SetIndexBuffer(11, B_CClr,      INDICATOR_COLOR_INDEX);
+   SetIndexBuffer(12, B_ER,        INDICATOR_CALCULATIONS);
+   SetIndexBuffer(13, B_State,     INDICATOR_CALCULATIONS);
 
-   //--- Codici freccia per ogni plot
-   PlotIndexSetInteger(1, PLOT_ARROW, 233);   // Buy1  ▲
-   PlotIndexSetInteger(2, PLOT_ARROW, 233);   // Buy2  ▲
-   PlotIndexSetInteger(3, PLOT_ARROW, 233);   // Buy3  ▲
-   PlotIndexSetInteger(4, PLOT_ARROW, 234);   // Sell1 ▼
-   PlotIndexSetInteger(5, PLOT_ARROW, 234);   // Sell2 ▼
-   PlotIndexSetInteger(6, PLOT_ARROW, 234);   // Sell3 ▼
-   PlotIndexSetInteger(7, PLOT_ARROW, 158);   // Caution ■ (filled square)
-   PlotIndexSetInteger(15, PLOT_ARROW, 169);  // [v4.00] BiasContra ◆ (diamond)
+   //--- Codici freccia (plot number, NON buffer number)
+   PlotIndexSetInteger(1, PLOT_ARROW, 233);   // ▲ BUY  (COLOR_ARROW)
+   PlotIndexSetInteger(2, PLOT_ARROW, 234);   // ▼ SELL (COLOR_ARROW)
+   // Plot 3 is now DRAW_LINE — no arrow code needed
 
-   //--- Empty values per tutti i 13 plot
-   PlotIndexSetDouble(0,  PLOT_EMPTY_VALUE, 0.0);          // Trail
-   for(int p = 1; p <= 7; p++)
-      PlotIndexSetDouble(p, PLOT_EMPTY_VALUE, EMPTY_VALUE); // Frecce + Caution
-   PlotIndexSetDouble(8,  PLOT_EMPTY_VALUE, EMPTY_VALUE);   // Entry line
-   PlotIndexSetDouble(9,  PLOT_EMPTY_VALUE, EMPTY_VALUE);   // Flat fill
-   PlotIndexSetDouble(10, PLOT_EMPTY_VALUE, EMPTY_VALUE);   // Flat upper
-   PlotIndexSetDouble(11, PLOT_EMPTY_VALUE, EMPTY_VALUE);   // Flat lower
-   PlotIndexSetDouble(12, PLOT_EMPTY_VALUE, EMPTY_VALUE);   // Candles
-   PlotIndexSetDouble(13, PLOT_EMPTY_VALUE, EMPTY_VALUE);  // [v4.00] Chand Long
-   PlotIndexSetDouble(14, PLOT_EMPTY_VALUE, EMPTY_VALUE);  // [v4.00] Chand Short
-   PlotIndexSetDouble(15, PLOT_EMPTY_VALUE, EMPTY_VALUE);  // [v4.00] Bias Contra
+   //--- Empty values per tutti i 5 plot
+   PlotIndexSetDouble(0, PLOT_EMPTY_VALUE, 0.0);
+   PlotIndexSetDouble(1, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+   PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+   PlotIndexSetDouble(3, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+   PlotIndexSetDouble(4, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
    //--- Disabilita plot opzionali
    if(!InpColorBars)
-      PlotIndexSetInteger(12, PLOT_DRAW_TYPE, DRAW_NONE);
-
+      PlotIndexSetInteger(4, PLOT_DRAW_TYPE, DRAW_NONE);   // Plot 4 = Candles
    if(!InpShowArrows)
      {
-      for(int p = 1; p <= 7; p++)
-         PlotIndexSetInteger(p, PLOT_DRAW_TYPE, DRAW_NONE);
-      PlotIndexSetInteger(8, PLOT_DRAW_TYPE, DRAW_NONE);  // Entry line
+      PlotIndexSetInteger(1, PLOT_DRAW_TYPE, DRAW_NONE);   // Plot 1 = BUY
+      PlotIndexSetInteger(2, PLOT_DRAW_TYPE, DRAW_NONE);   // Plot 2 = SELL
+      PlotIndexSetInteger(3, PLOT_DRAW_TYPE, DRAW_NONE);   // Plot 3 = Entry level
      }
-
    if(!InpShowTrailLine)
-      PlotIndexSetInteger(0, PLOT_DRAW_TYPE, DRAW_NONE);
-
-   // Toggle zona FLAT visiva
-   if(!InpShowFlatZone || !InpFlatDetect)
-     {
-      PlotIndexSetInteger(9,  PLOT_DRAW_TYPE, DRAW_NONE);  // Flat fill
-      PlotIndexSetInteger(10, PLOT_DRAW_TYPE, DRAW_NONE);  // Flat upper
-      PlotIndexSetInteger(11, PLOT_DRAW_TYPE, DRAW_NONE);  // Flat lower
-     }
-   // [v4.00] Toggle Chandelier overlay
-   if(!InpShowChandelier)
-     {
-      PlotIndexSetInteger(13, PLOT_DRAW_TYPE, DRAW_NONE);
-      PlotIndexSetInteger(14, PLOT_DRAW_TYPE, DRAW_NONE);
-     }
-   // [v4.00] BiasContra markers (visibili solo se bias HTF possibile)
-   if(g_htfHandle == INVALID_HANDLE)
-      PlotIndexSetInteger(15, PLOT_DRAW_TYPE, DRAW_NONE);
+      PlotIndexSetInteger(0, PLOT_DRAW_TYPE, DRAW_NONE);   // Plot 0 = Trail Stop
 
    //--- Short name dinamico (usa g_eff_* per mostrare i valori effettivi)
+   // Formato: UTBot[Key,ATR,Sorgente] — i parametri KAMA effettivi sono inclusi
+   // così il trader vede immediatamente quale configurazione è attiva.
    string srcStr;
-   switch(g_eff_srcType)
+   switch(InpSrcType)
      {
       case SRC_CLOSE: srcStr = "Close"; break;
       case SRC_HMA:   srcStr = "HMA" + IntegerToString(InpHMAPeriod); break;
@@ -847,7 +529,7 @@ int OnInit()
       default: srcStr = "?"; break;
      }
    IndicatorSetString(INDICATOR_SHORTNAME,
-      "UTBot3[" + DoubleToString(g_eff_keyValue, 1) + "," +
+      "UTBot[" + DoubleToString(g_eff_keyValue, 1) + "," +
       IntegerToString(g_eff_atrPeriod) + "," + srcStr + "]");
 
    //--- Warmup: barre minime prima che il trailing stop sia affidabile.
@@ -879,31 +561,36 @@ int OnInit()
    }
 
    //--- Inizializza handle bias HTF ---
-   // Carica lo stesso indicatore su TF superiore. Legge B_State (buffer 27).
+   // Carica lo stesso indicatore su TF superiore. Legge B_State (buffer 13).
    // InpUseBias=false sull'istanza HTF evita ricorsione infinita.
    // InpApplyTheme=false: il child NON deve toccare il tema chart.
-   // InpSrcType (NON g_eff_srcType): il child fa il proprio UTBotPresetsInit().
-   // [v3.50] Handle HTF creato SEMPRE (se TF diverso), indipendentemente da InpUseBias.
-   // Così il toggle dashboard BIAS funziona anche se InpUseBias era false all'avvio.
-   // [v3.52] g_eff_biasTF: preset auto per TF (M1→M15, M5→M30, M15→H1, ecc.)
-   if(_Period != g_eff_biasTF)
+   if(InpUseBias && _Period != InpBiasTF)
      {
-      g_htfHandle = iCustom(_Symbol, g_eff_biasTF, "UTBotAdaptive-Ok-V1",
-                            InpTFPreset,      InpKeyValue,      InpATRPeriod,
-                            InpSrcType,       InpHMAPeriod,
-                            InpKAMA_N,        InpKAMA_Fast,     InpKAMA_Slow,
-                            InpJMA_Period,    InpJMA_Phase,
-                            false, PERIOD_H1,                   // bias OFF (child)
-                            false, 0.0, 0.20, 8, false,         // Flat OFF (child)
-                            false, 2.5, true,                    // Chand OFF (child) [v4.00]
-                            false, false,                        // ColorBars OFF, Arrows OFF
-                            false, false,                        // Theme OFF, Grid OFF
-                            InpThemeBG, InpThemeFG, InpThemeGrid,
+      // Ordine parametri iCustom: deve corrispondere ESATTAMENTE alla
+      // dichiarazione degli input in testa al file.
+      // InpTFPreset, InpKeyValue, InpATRPeriod,
+      // InpSrcType, InpHMAPeriod,
+      // InpKAMA_N, InpKAMA_Fast, InpKAMA_Slow,
+      // InpJMA_Period, InpJMA_Phase,
+      // InpUseBias(=false), InpBiasTF(=dummy),
+      // InpColorBars(=false), InpShowArrows(=false),
+      // InpApplyTheme(=false), InpShowGrid(=false),
+      // InpThemeBG, InpThemeFG, InpThemeGrid,
+      // InpThemeBullCandl, InpThemeBearCandl,
+      // InpAlertPopup(=false), InpAlertPush(=false)
+      g_htfHandle = iCustom(_Symbol, InpBiasTF, "UTBotAdaptive",
+                            InpTFPreset,   InpKeyValue,   InpATRPeriod,
+                            InpSrcType,    InpHMAPeriod,
+                            InpKAMA_N,     InpKAMA_Fast,  InpKAMA_Slow,
+                            InpJMA_Period, InpJMA_Phase,
+                            false, PERIOD_H1,        // bias OFF + dummy TF
+                            false, false,             // ColorBars OFF, Arrows OFF
+                            false, false,             // ApplyTheme OFF, ShowGrid OFF
+                            InpThemeBG,    InpThemeFG,    InpThemeGrid,
                             InpThemeBullCandl, InpThemeBearCandl,
-                            false, false,                        // Alert OFF
-                            false, false);                       // Dashboard OFF, Trail OFF
+                            false, false);            // Alert OFF, Push OFF
       if(g_htfHandle == INVALID_HANDLE)
-         Print("[UTBot v4.01] WARN: handle HTF bias non valido, bias disabilitato");
+         Print("[UTBot v2.00] WARN: handle HTF bias non valido, bias disabilitato");
      }
 
    //--- Chart theme (anti-flash con GlobalVariables)
@@ -977,35 +664,17 @@ int OnInit()
 
    // Log completo dei parametri effettivi nel tab Experts.
    // Utile per verificare quale preset è attivo e i valori KAMA applicati.
-   Print("[UTBot v4.01] Preset=", EnumToString(InpTFPreset),
+   Print("[UTBot v2.00] Preset=", EnumToString(InpTFPreset),
          " | Key=", DoubleToString(g_eff_keyValue, 1),
          " | ATR=", g_eff_atrPeriod,
-         " | Src=", EnumToString(g_eff_srcType),
+         " | Src=", EnumToString(InpSrcType),
          " | KAMA(", g_eff_kamaN, ",", g_eff_kamaFast, ",", g_eff_kamaSlow, ")",
          " | Warmup=", g_warmup);
 
    //--- Dashboard: sync toggle con input, crea oggetti, primo render
-   // [v3.01 fix] g_dash_vis_trail DEVE essere sincronizzato con InpShowTrailLine.
-   // In v3.00 mancava questa riga: quando l'EA host caricava l'indicatore con
-   // InpShowTrailLine=false (embed mode), il plot veniva nascosto (L.637) ma
-   // la dashboard mostrava "Trail Line ON" — stato incoerente.
-   g_dash_vis_trail   = InpShowTrailLine;
    g_dash_vis_arrows  = InpShowArrows;
    g_dash_vis_entry   = InpShowArrows;
    g_dash_vis_candles = InpColorBars;
-   // [v3.50] Init stato runtime per toggle dashboard
-   g_biasEnabled       = InpUseBias;
-   g_dash_vis_bias     = InpUseBias;
-   g_dash_vis_flatzone = InpShowFlatZone;
-   g_wasFlatPrev       = false;
-   g_flatRangeHigh     = 0;
-   g_flatRangeLow      = 0;
-   // [v4.00] Init Chandelier state
-   g_chandHH         = 0;
-   g_chandLL         = 999999;   // FIX: deve essere alto per catturare low[i]
-   g_chandLastLong   = 0;
-   g_chandLastShort  = 999999;
-   g_dash_vis_chand  = InpShowChandelier;
    if(InpShowDashboard)
      {
       InitUTBDashboard();
@@ -1350,9 +1019,9 @@ void InitUTBDashboard()
       ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_NO_PERIODS);
      }
 
-   //--- Button pool (7 toggle: +CHAND v4.00)
-   string btnIds[7] = {"TRAIL", "ARROWS", "ENTRY", "CANDLES", "FLAT", "BIAS", "CHAND"};
-   for(int i = 0; i < 7; i++)
+   //--- Button pool (4 toggle: TRAIL, ARROWS, ENTRY, CANDLES)
+   string btnIds[4] = {"TRAIL", "ARROWS", "ENTRY", "CANDLES"};
+   for(int i = 0; i < 4; i++)
      {
       string name = UTB_DASH_PREFIX + "BTN_" + btnIds[i];
       ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
@@ -1383,7 +1052,7 @@ void UpdateUTBDashboard(bool forceUpdate = false)
    int row = 0;
 
    //--- HEADER ---
-   UTBSetRow(row++, "UTBot v4.01 | " + _Symbol + " | " + EnumToString(_Period),
+   UTBSetRow(row++, "UTBot v2.00 | " + _Symbol + " | " + EnumToString(_Period),
              C'70,130,255', 10);
    UTBSetRow(row++, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", C'60,70,100', 7);
 
@@ -1423,82 +1092,20 @@ void UpdateUTBDashboard(bool forceUpdate = false)
       else                   { erQual = "RANGING";   erClr = C'150,165,185'; }
       UTBSetRow(row++, "ER:      " + DoubleToString(erVal, 2) +
                 " " + erBar + " " + erQual, erClr);
-
-      // [v3.01] 4 nuove righe dashboard per trading live:
-      //   1. ATR in pips — volatilità corrente (utile per sizing)
-      //   2. Entry Level + P/L — ultimo livello di ingresso con delta dal bid
-      //   3. Ultimo Segnale — direzione + quante barre fa (scan su B_Buy1/B_Sell1)
-      //   4. Spread — colore semaforo (verde ≤1.5p, giallo ≤3.0p, rosso >3.0p)
-      // UTB_DASH_MAX_ROWS alzato da 20 a 24 per ospitare le righe extra.
-
-      // ATR in pips (real-time)
-      double atrPrice = g_atr[rt - 1];
-      double pipSize  = _Point * ((_Digits == 3 || _Digits == 5) ? 10.0 : 1.0);
-      double atrPips  = atrPrice / pipSize;
-      UTBSetRow(row++, "ATR:     " + DoubleToString(atrPips, 1) + " pips", C'150,165,185');
-
-      // Entry Level + P/L dal prezzo corrente
-      if(g_entryLevel != EMPTY_VALUE)
-        {
-         double eDelta = curPrice - g_entryLevel;
-         double eDeltaPips = eDelta / pipSize;
-         string eSign  = (eDelta >= 0) ? "+" : "";
-         color  eClr   = (eDelta >= 0) ? C'50,220,120' : C'239,83,80';
-         UTBSetRow(row++, "Entry:   " + DoubleToString(g_entryLevel, _Digits) +
-                   "  (" + eSign + DoubleToString(eDeltaPips, 1) + "p)", eClr);
-        }
-      else
-         UTBSetRow(row++, "Entry:   ---", C'80,90,110');
-
-      // [v3.01] Ultimo segnale: scan all'indietro da barra chiusa corrente.
-      // [v3.01 fix] MathMax(g_warmup, ...) impedisce di leggere buffer nella
-      // zona warmup (0..g_warmup-1) dove B_Buy1=0.0 (default MQL5) che è
-      // diverso da EMPTY_VALUE(DBL_MAX), causando un falso positivo "BUY ▲".
-      string lastSigTxt = "---";
-      color  lastSigClr = C'80,90,110';
-      for(int s = idx; s >= MathMax(g_warmup, idx - 500); s--)
-        {
-         if(B_Buy1[s] != EMPTY_VALUE)
-           {
-            lastSigTxt = "BUY ▲  " + IntegerToString(idx - s) + " barre fa";
-            lastSigClr = C'50,220,120';
-            break;
-           }
-         if(B_Sell1[s] != EMPTY_VALUE)
-           {
-            lastSigTxt = "SELL ▼  " + IntegerToString(idx - s) + " barre fa";
-            lastSigClr = C'239,83,80';
-            break;
-           }
-        }
-      UTBSetRow(row++, "Segnale: " + lastSigTxt, lastSigClr);
-
-      // Spread in pips (real-time)
-      double spreadPips = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) - curPrice) / pipSize;
-      color  spClr = (spreadPips <= 1.5) ? C'50,220,120' :
-                     (spreadPips <= 3.0) ? C'255,180,50' : C'239,83,80';
-      UTBSetRow(row++, "Spread:  " + DoubleToString(spreadPips, 1) + " pips", spClr);
      }
    else
      {
       UTBSetRow(row++, "Stato:   ATTESA DATI...", C'150,165,185');
       UTBSetRow(row++, "Trail:   ---", C'150,165,185');
       UTBSetRow(row++, "ER:      ---", C'150,165,185');
-      UTBSetRow(row++, "ATR:     ---", C'150,165,185');
-      UTBSetRow(row++, "Entry:   ---", C'80,90,110');
-      UTBSetRow(row++, "Segnale: ---", C'80,90,110');
-      UTBSetRow(row++, "Spread:  ---", C'150,165,185');
      }
 
    //--- CONFIG ---
    UTBSetRow(row++, "━━━ CONFIG ━━━━━━━━━━━━━━━━━━━━━━━━━", C'60,70,100', 7);
 
-   // [v3.00] Sorgente: usa g_eff_srcType (era InpSrcType in v2.01).
-   // g_eff_srcType è impostato dal preset TF in UTBotPresetsInit().
-   // Se il preset ha cambiato la sorgente rispetto all'input utente,
-   // viene aggiunto il tag " [auto]" nel display.
+   // Sorgente
    string srcStr;
-   switch(g_eff_srcType)
+   switch(InpSrcType)
      {
       case SRC_CLOSE: srcStr = "Close (originale)"; break;
       case SRC_HMA:   srcStr = "HMA(" + IntegerToString(InpHMAPeriod) + ")"; break;
@@ -1513,8 +1120,6 @@ void UpdateUTBDashboard(bool forceUpdate = false)
          break;
       default: srcStr = "?"; break;
      }
-   if(InpTFPreset != TF_PRESET_UT_MANUAL && g_eff_srcType != InpSrcType)
-      srcStr += " [auto]";
    UTBSetRow(row++, "Sorgente: " + srcStr, C'150,165,185');
 
    // Preset
@@ -1531,49 +1136,17 @@ void UpdateUTBDashboard(bool forceUpdate = false)
    UTBSetRow(row++, "Key: " + DoubleToString(g_eff_keyValue, 1) +
              " | ATR: " + IntegerToString(g_eff_atrPeriod), C'150,165,185');
 
-   // [v3.50] Bias HTF — usa g_biasEnabled (runtime toggle)
-   if(g_biasEnabled && g_htfHandle != INVALID_HANDLE)
+   // Bias HTF
+   if(InpUseBias && g_htfHandle != INVALID_HANDLE)
      {
       string htfDir = (g_lastHtfState > 0.5)  ? "LONG ▲" :
                       (g_lastHtfState < -0.5) ? "SHORT ▼" : "NEUTRO";
       color  htfClr = (g_lastHtfState > 0.5)  ? C'50,220,120' :
                       (g_lastHtfState < -0.5) ? C'239,83,80'  : C'150,165,185';
-      UTBSetRow(row++, "Bias HTF: " + EnumToString(g_eff_biasTF) + " " + htfDir, htfClr);
-     }
-   else if(g_htfHandle != INVALID_HANDLE)
-      UTBSetRow(row++, "Bias HTF: OFF (toggle)", C'80,90,110');
-   else
-      UTBSetRow(row++, "Bias HTF: N/A (stesso TF)", C'60,60,80');
-
-   // [v3.00] Sezione FLAT STATUS — mostra regime corrente (FLAT/ACTIVE)
-   // e channel width in pips. Legge B_FlatState[barra chiusa]:
-   //   < 0.5 → FLAT (laterale, colore blu)
-   //   >= 0.5 → ACTIVE (trending, colore verde)
-   //--- FLAT STATUS ---
-   if(InpFlatDetect)
-     {
-      int rt2 = g_dash_ratesTotal;
-      if(rt2 >= 3)
-        {
-         double flatVal = B_FlatState[rt2 - 2];
-         double cwVal   = B_ChWidth[rt2 - 2];
-         double cwPips  = cwVal / (_Point * ((_Digits == 3 || _Digits == 5) ? 10.0 : 1.0));
-
-         if(flatVal < 0.5) // FLAT
-           {
-            UTBSetRow(row++, "Regime:  FLAT — laterale", C'100,150,220');
-            UTBSetRow(row++, "ChWidth: " + DoubleToString(cwPips, 1) + "p" +
-                      " < min " + DoubleToString(g_eff_flatMinWidth, 1) + "p", C'100,150,220');
-           }
-         else
-           {
-            UTBSetRow(row++, "Regime:  ACTIVE — trending", C'50,220,120');
-            UTBSetRow(row++, "ChWidth: " + DoubleToString(cwPips, 1) + "p", C'150,165,185');
-           }
-        }
+      UTBSetRow(row++, "Bias HTF: " + EnumToString(InpBiasTF) + " " + htfDir, htfClr);
      }
    else
-      UTBSetRow(row++, "Flat:    OFF", C'80,90,110');
+      UTBSetRow(row++, "Bias HTF: OFF", C'80,90,110');
 
    //--- VISUALS ---
    UTBSetRow(row++, "━━━ VISUALS ━━━━━━━━━━━━━━━━━━━━━━━━", C'60,70,100', 7);
@@ -1609,31 +1182,6 @@ void UpdateUTBDashboard(bool forceUpdate = false)
    UTBSetBtn("CANDLES", g_dash_vis_candles, y_base + 6 + row * y_step);
    row++;
 
-   // [v3.50] Flat Zone toggle (visivo: mostra/nasconde canale blu)
-   vst = g_dash_vis_flatzone ? "● ON" : "○ OFF";
-   vcl = g_dash_vis_flatzone ? C'70,200,130' : C'50,70,120';
-   UTBSetRow(row, "Flat Zone          " + vst, vcl);
-   UTBSetBtn("FLAT", g_dash_vis_flatzone, y_base + 6 + row * y_step);
-   row++;
-
-   // [v3.50] Bias HTF toggle (LOGICO: attiva/disattiva bias + forza recalc)
-   if(g_htfHandle != INVALID_HANDLE)
-     {
-      vst = g_dash_vis_bias ? "● ON" : "○ OFF";
-      vcl = g_dash_vis_bias ? C'70,200,130' : C'50,70,120';
-      UTBSetRow(row, "Bias HTF           " + vst, vcl);
-      UTBSetBtn("BIAS", g_dash_vis_bias, y_base + 6 + row * y_step);
-      row++;
-     }
-
-   // [v4.01 fix] Chandelier overlay toggle — sempre visibile (attivabile da dashboard).
-   // Era dentro if(InpShowChandelier): se input=false, pulsante nascosto → impossibile attivare.
-   vst = g_dash_vis_chand ? "● ON" : "○ OFF";
-   vcl = g_dash_vis_chand ? C'70,200,130' : C'50,70,120';
-   UTBSetRow(row, "Chandelier         " + vst, vcl);
-   UTBSetBtn("CHAND", g_dash_vis_chand, y_base + 6 + row * y_step);
-   row++;
-
    //--- Hide unused rows
    for(int r = row; r < UTB_DASH_MAX_ROWS; r++)
      {
@@ -1656,14 +1204,6 @@ void DestroyUTBDashboard()
 //+------------------------------------------------------------------+
 //| OnChartEvent — Handler bottoni dashboard                         |
 //+------------------------------------------------------------------+
-// [v3.00] Plot index aggiornati per 13 plot (era 5 in v2.01).
-// QUESTO FIX NON ERA NELLA SPECIFICA ORIGINALE — aggiunto in fase di audit.
-//   TRAIL:   Plot 0    (invariato)
-//   ARROWS:  Plot 1-7  (era 1-2: solo Buy+Sell, ora Buy1-3+Sell1-3+Caution)
-//   ENTRY:   Plot 8    (era 3)
-//   CANDLES: Plot 12   (era 4)
-// Senza questo fix, cliccare "ARROWS OFF" nascondeva solo Buy1+Buy2
-// lasciando visibili Buy3, Sell1-3 e Caution.
 void OnChartEvent(const int id, const long &lparam,
                   const double &dparam, const string &sparam)
   {
@@ -1684,75 +1224,29 @@ void OnChartEvent(const int id, const long &lparam,
                           g_dash_vis_trail ? DRAW_COLOR_LINE : DRAW_NONE);
      }
 
-   //--- ARROWS: Plot 1-7 (Buy1-3, Sell1-3, Caution)
+   //--- ARROWS: Plot 1,2 DRAW_COLOR_ARROW
    if(btn_id == "ARROWS")
      {
       g_dash_vis_arrows = !g_dash_vis_arrows;
       int drawType = g_dash_vis_arrows ? DRAW_COLOR_ARROW : DRAW_NONE;
-      for(int p = 1; p <= 7; p++)
-         PlotIndexSetInteger(p, PLOT_DRAW_TYPE, drawType);
+      PlotIndexSetInteger(1, PLOT_DRAW_TYPE, drawType);
+      PlotIndexSetInteger(2, PLOT_DRAW_TYPE, drawType);
      }
 
-   //--- ENTRY: Plot 8 DRAW_LINE
+   //--- ENTRY: Plot 3 DRAW_LINE
    if(btn_id == "ENTRY")
      {
       g_dash_vis_entry = !g_dash_vis_entry;
-      PlotIndexSetInteger(8, PLOT_DRAW_TYPE,
+      PlotIndexSetInteger(3, PLOT_DRAW_TYPE,
                           g_dash_vis_entry ? DRAW_LINE : DRAW_NONE);
      }
 
-   //--- CANDLES: Plot 12 DRAW_COLOR_CANDLES
+   //--- CANDLES: Plot 4 DRAW_COLOR_CANDLES
    if(btn_id == "CANDLES")
      {
       g_dash_vis_candles = !g_dash_vis_candles;
-      PlotIndexSetInteger(12, PLOT_DRAW_TYPE,
+      PlotIndexSetInteger(4, PLOT_DRAW_TYPE,
                           g_dash_vis_candles ? DRAW_COLOR_CANDLES : DRAW_NONE);
-     }
-
-   //--- [v3.50] FLAT: toggle visivo Plot 9-11 (fill + upper + lower)
-   // Cambia solo la visibilità (DRAW_FILLING/LINE vs DRAW_NONE).
-   // I buffer flat sono sempre calcolati se InpFlatDetect=true.
-   if(btn_id == "FLAT")
-     {
-      bool wasVis = g_dash_vis_flatzone;
-      g_dash_vis_flatzone = !g_dash_vis_flatzone;
-      // [v3.51 fix] Reset Donchian quando toggle FLAT passa OFF→ON: evita che
-      // la prossima flat zone erediti HH/LL stantii dal periodo precedente.
-      if(!wasVis && g_dash_vis_flatzone)
-        {
-         g_wasFlatPrev   = false;
-         g_flatRangeHigh = 0;
-         g_flatRangeLow  = 0;
-        }
-      PlotIndexSetInteger(9,  PLOT_DRAW_TYPE,
-                          g_dash_vis_flatzone ? DRAW_FILLING : DRAW_NONE);
-      PlotIndexSetInteger(10, PLOT_DRAW_TYPE,
-                          g_dash_vis_flatzone ? DRAW_LINE : DRAW_NONE);
-      PlotIndexSetInteger(11, PLOT_DRAW_TYPE,
-                          g_dash_vis_flatzone ? DRAW_LINE : DRAW_NONE);
-     }
-
-   //--- [v3.50] BIAS: toggle LOGICO + force recalc
-   // Cambia g_biasEnabled → tutte le frecce storiche vengono ricalcolate
-   // al prossimo OnCalculate con il nuovo stato del bias.
-   if(btn_id == "BIAS")
-     {
-      g_dash_vis_bias = !g_dash_vis_bias;
-      g_biasEnabled = g_dash_vis_bias;
-      g_forceRecalcCounter++;  // forza fullRecalc al prossimo tick
-     }
-
-   //--- [v4.01 fix] CHAND: toggle LOGICO + visivo Plot 13-14 (Chandelier Long + Short)
-   // Era solo visivo (v4.00): nascondeva le linee ma il calcolo restava invariato.
-   // Ora attiva/disattiva il calcolo Chandelier + forza fullRecalc per ricalcolare buffer.
-   if(btn_id == "CHAND")
-     {
-      g_dash_vis_chand = !g_dash_vis_chand;
-      PlotIndexSetInteger(13, PLOT_DRAW_TYPE,
-                          g_dash_vis_chand ? DRAW_LINE : DRAW_NONE);
-      PlotIndexSetInteger(14, PLOT_DRAW_TYPE,
-                          g_dash_vis_chand ? DRAW_LINE : DRAW_NONE);
-      g_forceRecalcCounter++;  // [v4.01] forza fullRecalc al prossimo tick
      }
 
    UpdateUTBDashboard(true);
@@ -1789,27 +1283,6 @@ int OnCalculate(const int rates_total,
    bool fullRecalc = (prev_calculated < g_warmup + 2);
    int  start      = fullRecalc ? 1 : prev_calculated - 1;
 
-   // [v3.50] Force fullRecalc quando dashboard toggle BIAS cambia stato.
-   // g_forceRecalcCounter viene incrementato in OnChartEvent → BIAS handler.
-   // Al prossimo tick, il contatore diverso da s_lastRecalcCheck forza fullRecalc.
-   static int s_lastRecalcCheck = 0;
-   if(g_forceRecalcCounter != s_lastRecalcCheck)
-     {
-      s_lastRecalcCheck = g_forceRecalcCounter;
-      fullRecalc = true;
-      start = 1;
-     }
-
-   // [v3.51 fix] Reset stato Donchian su OGNI fullRecalc (init, cambio TF, force-recalc).
-   // In v3.50 il reset era solo nel path force-recalc → la prima flat zone dopo
-   // caricamento iniziale o cambio TF ereditava HH/LL stantii.
-   if(fullRecalc)
-     {
-      g_wasFlatPrev   = false;
-      g_flatRangeHigh = 0;
-      g_flatRangeLow  = 0;
-     }
-
    //=== STEP 1: ATR Wilder (RMA) — usa g_eff_atrPeriod ===
    if(fullRecalc)
      {
@@ -1836,13 +1309,8 @@ int OnCalculate(const int rates_total,
         }
      }
 
-   // [v3.00] STEP 2: Sorgente adattiva — usa g_eff_srcType (era InpSrcType).
-   // g_eff_srcType viene impostato da UTBotPresetsInit() in base al TF:
-   //   M1/M30/H1/H4 → JMA (filtra rumore, quasi zero lag)
-   //   M5/M15       → KAMA (anti-whipsaw nei range intraday)
-   //   MANUAL       → usa InpSrcType dell'utente
    //=== STEP 2: Sorgente adattiva ===
-   switch(g_eff_srcType)
+   switch(InpSrcType)
      {
       case SRC_CLOSE:
          for(int i = (fullRecalc ? 0 : start); i < rates_total; i++)
@@ -1897,70 +1365,30 @@ int OnCalculate(const int rates_total,
    //=== STEP 3: Trailing Stop + Segnali + Visuali — usa g_eff_keyValue ===
    int trail_start = MathMax(g_warmup, start);
 
-   // [v3.00] fullRecalc init: inizializza la barra "seed" (trail_start-1).
-   // v2.01 inizializzava B_TrailClr, B_BuyClr, B_SellClr (rinominati in v3.00).
-   // v3.00 aggiunge B_FlatState=1.0 (active) e B_ChWidth=0 per i nuovi buffer.
    if(fullRecalc || B_Trail[trail_start - 1] == 0.0)
      {
       B_Trail[trail_start - 1]      = g_src[trail_start - 1];
       B_TrailClr[trail_start - 1]   = 0;
-      B_Buy1Clr[trail_start - 1]    = 0;       // [v3.00] era B_BuyClr
-      B_Sell1Clr[trail_start - 1]   = 0;       // [v3.00] era B_SellClr
+      B_BuyClr[trail_start - 1]     = 0;
+      B_SellClr[trail_start - 1]    = 0;
       B_EntryLine[trail_start - 1]  = EMPTY_VALUE;
       B_ER[trail_start - 1]         = 0;
       B_State[trail_start - 1]      = 0;
-      B_FlatState[trail_start - 1]  = 1.0;    // [v3.00] active by default
-      B_ChWidth[trail_start - 1]    = 0;      // [v3.00] nuovo buffer
-      B_BiasGate[trail_start - 1]     = EMPTY_VALUE;
-      B_ChandLong[trail_start - 1]    = EMPTY_VALUE;
-      B_ChandShort[trail_start - 1]   = EMPTY_VALUE;
-      B_BiasContra[trail_start - 1]   = EMPTY_VALUE;
-      B_BiasContraClr[trail_start - 1] = 0;
-      // [v4.00] Reset stato Chandelier
-      g_chandHH         = 0;
-      g_chandLL         = 999999;   // FIX: deve essere alto per catturare low[i]
-      g_chandLastLong   = 0;
-      g_chandLastShort  = 999999;
-      g_entryLevel = EMPTY_VALUE;
+      g_entryLevel = EMPTY_VALUE;   // reset su fullRecalc
      }
 
-   //--- HTF Bias — per-bar durante fullRecalc, singolo altrimenti (v3.50) ---
-   // [v3.50] Durante fullRecalc, il bias va letto barra per barra dall'istanza HTF
-   // per avere il backtest visivo corretto. In v3.01 il bias era letto UNA volta prima
-   // del loop → tutte le barre storiche usavano il bias ODIERNO, falsando le frecce.
-   // Ora si copia l'intero B_State dall'HTF e si usa iBarShift per mappare ogni barra.
-   // CopyBuffer full SOLO durante fullRecalc; incrementale: solo barra chiusa corrente.
-   double htfStateArr[];
-   int htfCopied = 0;
-   bool htfAvailable = g_biasEnabled && g_htfHandle != INVALID_HANDLE;
-   double htfStateCurrent = 0.0;
-
-   if(htfAvailable)
+   //--- Legge bias HTF una sola volta prima del loop ---
+   // Offset=1: usa sempre barra chiusa del TF superiore (anti-repainting).
+   double htfState = 0.0;
+   if(InpUseBias && g_htfHandle != INVALID_HANDLE)
      {
-      if(fullRecalc)
-        {
-         // [v3.50] Full copy per per-bar mapping (una volta per fullRecalc)
-         int htfBars = iBars(_Symbol, g_eff_biasTF);
-         if(htfBars > 0)
-           {
-            ArraySetAsSeries(htfStateArr, true);
-            htfCopied = CopyBuffer(g_htfHandle, 27, 0, htfBars, htfStateArr);
-           }
-         if(htfCopied > 1)
-            htfStateCurrent = htfStateArr[1];
-        }
-      else
-        {
-         // Incrementale: solo barra chiusa corrente (come v3.01, efficiente)
-         double tmp[1];
-         if(CopyBuffer(g_htfHandle, 27, 1, 1, tmp) == 1)
-            htfStateCurrent = tmp[0];
-        }
+      double tmp[1];
+      if(CopyBuffer(g_htfHandle, 13, 1, 1, tmp) == 1)
+         htfState = tmp[0];
      }
-
-   g_lastHtfState = htfStateCurrent;   // per dashboard
-   bool biasLong  = !g_biasEnabled || (htfStateCurrent > 0.5);
-   bool biasShort = !g_biasEnabled || (htfStateCurrent < -0.5);
+   g_lastHtfState = htfState;   // per dashboard
+   bool biasLong  = !InpUseBias || (htfState > 0.5);   // +1 = accetta BUY
+   bool biasShort = !InpUseBias || (htfState < -0.5);   // -1 = accetta SELL
 
    for(int i = trail_start; i < rates_total; i++)
      {
@@ -1983,310 +1411,55 @@ int OnCalculate(const int rates_total,
       B_Trail[i]    = trail;
       B_TrailClr[i] = (src > trail) ? 0.0 : 1.0;
 
-      // [v3.50] Per-bar HTF bias durante fullRecalc.
-      // Sovrascrivi biasLong/biasShort con lo stato HTF al momento della barra i.
-      // iBarShift converte il tempo LTF nell'indice HTF. +1 = barra chiusa (anti-repainting).
-      // htfStateArr è in modalità series (indice 0 = barra più recente).
-      if(fullRecalc && htfAvailable && htfCopied > 0)
-        {
-         int htfShift = iBarShift(_Symbol, g_eff_biasTF, time[i]);
-         double htfBarState = 0.0;
-         // [v3.51 fix] iBarShift restituisce -1 se il tempo non è trovato:
-         // senza guard, htfIdx = -1+1 = 0 → legge barra formante → viola anti-repainting.
-         if(htfShift >= 0)
-           {
-            int htfIdx = htfShift + 1; // +1 = barra chiusa HTF (anti-repainting)
-            if(htfIdx < htfCopied)
-               htfBarState = htfStateArr[htfIdx];
-           }
-         biasLong  = !g_biasEnabled || (htfBarState > 0.5);
-         biasShort = !g_biasEnabled || (htfBarState < -0.5);
-        }
-
-      // [v3.00] Efficiency Ratio windowed (Kaufman) su close[].
-      // In v2.01 l'ER era calcolato solo per SRC_KAMA (proxy |delta_src|/ATR
-      // per le altre sorgenti). Ora TUTTE le sorgenti usano la formula
-      // Kaufman originale: ER = |close[i] - close[i-N]| / Σ|close[k]-close[k-1]|
-      // su finestra g_eff_kamaN. Misura l'efficienza del PREZZO (non del filtro),
-      // quindi è indipendente dalla sorgente scelta.
+      //--- Efficiency Ratio inline ---
+      // KAMA: ER esatto (stessa finestra g_eff_kamaN).
+      // Altre sorgenti: proxy = min(1, |delta_src| / ATR).
       double er_val = 0.0;
-      int erWin = g_eff_kamaN;
-      if(i >= erWin)
+      if(InpSrcType == SRC_KAMA && i >= g_eff_kamaN)
         {
-         double d = MathAbs(close[i] - close[i - erWin]);
+         double d = MathAbs(close[i] - close[i - g_eff_kamaN]);
          double n = 0.0;
-         for(int k = 1; k <= erWin; k++)
+         for(int k = 1; k <= g_eff_kamaN; k++)
             n += MathAbs(close[i - k + 1] - close[i - k]);
          er_val = (n > 0.0) ? d / n : 0.0;
         }
+      else if(g_atr[i] > 0.0)
+         er_val = MathMin(1.0, MathAbs(src - src1) / g_atr[i]);
       B_ER[i] = er_val;
 
-      // [v3.00] Channel Width = 2×nLoss. Buffer nuovo (B_ChWidth) esposto
-      // per l'EA host via iCustom e usato internamente per flat detection.
-      double chWidth = 2.0 * nLoss;
-      B_ChWidth[i] = chWidth;
-
-      // [v3.00] Flat Detection — rileva zone laterali (ranging market).
-      // Doppia condizione: (1) canale stretto < minWidth pips  E  (2) ER medio basso.
-      // g_eff_flatMinWidth viene dal preset TF o dall'input utente.
-      // Quando isFlat=true → segnali BUY/SELL bloccati (FLAT gate, riga ~1736-1737)
-      // e zona blu disegnata con DRAW_FILLING (B_FlatFillUp/Dn).
-      double minWidthPrice = g_eff_flatMinWidth * _Point * (((_Digits == 3 || _Digits == 5) ? 10.0 : 1.0));
-      double erAvg = er_val;
-      // [v3.01 fix] MathMax(InpFlatERBars, 1) protegge da divisione per zero.
-      // Se utente imposta InpFlatERBars=0 → 0.0/0 = NaN (IEEE 754),
-      // NaN < threshold = false → flat detection silenziosamente disabilitata.
-      int flatERBars = MathMax(InpFlatERBars, 1);
-      if(InpFlatDetect && i >= flatERBars)
-        {
-         double erSum = 0.0;
-         for(int k = 0; k < flatERBars; k++)
-            erSum += B_ER[i - k];
-         erAvg = erSum / flatERBars;
-        }
-
-      bool isFlat = InpFlatDetect
-                 && (chWidth < minWidthPrice)
-                 && (erAvg < InpFlatERThresh);
-      B_FlatState[i] = isFlat ? 0.0 : 1.0;
-
-      //--- Flat zone visualization — Donchian orizzontale (v3.50) ---
-      // [v3.50] Il canale usa HH/LL persistenti dall'inizio della lateralità.
-      // Le bande sono ORIZZONTALI (si espandono solo se prezzo fa nuovo HH/LL).
-      // Alla fine della lateralità scompaiono istantaneamente (EMPTY_VALUE).
-      // [v3.51 fix] InpShowFlatZone → g_dash_vis_flatzone: rispetta toggle dashboard.
-      if(isFlat && g_dash_vis_flatzone && InpFlatDetect)
-        {
-         if(!g_wasFlatPrev)   // inizio nuova zona flat
-           {
-            g_flatRangeHigh = high[i];
-            g_flatRangeLow  = low[i];
-           }
-         else                 // flat continua — espandi range
-           {
-            if(high[i] > g_flatRangeHigh) g_flatRangeHigh = high[i];
-            if(low[i]  < g_flatRangeLow)  g_flatRangeLow  = low[i];
-           }
-
-         B_FlatFillUp[i] = g_flatRangeHigh;
-         B_FlatFillDn[i] = g_flatRangeLow;
-         B_FlatLineUp[i] = g_flatRangeHigh;
-         B_FlatLineDn[i] = g_flatRangeLow;
-        }
-      else
-        {
-         B_FlatFillUp[i] = EMPTY_VALUE;
-         B_FlatFillDn[i] = EMPTY_VALUE;
-         B_FlatLineUp[i] = EMPTY_VALUE;
-         B_FlatLineDn[i] = EMPTY_VALUE;
-        }
-      g_wasFlatPrev = isFlat;
-
-      //--- Chandelier Exit Anchored (v4.00) ---
-      // Trailing dal segnale UTBot più recente. HH/LL anchor resettato ad ogni
-      // crossover trail. Ratchet: Long solo sale, Short solo scende.
-      // [v4.01 fix] g_dash_vis_chand = toggle runtime da dashboard.
-      // Era InpShowChandelier (input immutabile): impossibile attivare da dashboard.
-      if(g_dash_vis_chand)
-        {
-         // Detect crossover trail per reset anchor
-         bool chandReset = false;
-         if(i > 0)
-           {
-            bool crossUp   = (g_src[i-1] < B_Trail[i-1]) && (src > trail);
-            bool crossDown = (g_src[i-1] > B_Trail[i-1]) && (src < trail);
-            if(crossUp || crossDown)
-              {
-               g_chandHH = high[i];
-               g_chandLL = low[i];
-               g_chandLastLong  = 0;
-               g_chandLastShort = 999999;
-               chandReset = true;
-              }
-           }
-         if(!chandReset)
-           {
-            if(high[i] > g_chandHH) g_chandHH = high[i];
-            if(low[i]  < g_chandLL) g_chandLL = low[i];
-           }
-
-         // ATR con volatility normalization opzionale
-         double chandATR = g_atr[i];
-         double adjATR;
-         if(InpChandVolNorm && i >= 50)
-           {
-            double avgATR = 0;
-            for(int k = 0; k < 50; k++)
-               avgATR += g_atr[i - k];
-            avgATR /= 50.0;
-            double volFactor = (chandATR > 0) ? (avgATR / chandATR) : 1.0;
-            adjATR = InpChandMult * chandATR * volFactor;
-           }
-         else
-            adjATR = InpChandMult * chandATR;
-
-         // Chandelier levels con ratchet
-         double chandLongVal  = g_chandHH - adjATR;
-         double chandShortVal = g_chandLL + adjATR;
-
-         if(src > trail) // regime LONG
-           {
-            if(g_chandLastLong > 0 && !chandReset)
-               chandLongVal = MathMax(chandLongVal, g_chandLastLong);
-            g_chandLastLong = chandLongVal;
-            B_ChandLong[i]  = chandLongVal;
-            B_ChandShort[i] = EMPTY_VALUE;
-           }
-         else // regime SHORT
-           {
-            if(g_chandLastShort < 999999 && !chandReset)
-               chandShortVal = MathMin(chandShortVal, g_chandLastShort);
-            g_chandLastShort = chandShortVal;
-            B_ChandShort[i] = chandShortVal;
-            B_ChandLong[i]  = EMPTY_VALUE;
-           }
-        }
-      else
-        {
-         B_ChandLong[i]  = EMPTY_VALUE;
-         B_ChandShort[i] = EMPTY_VALUE;
-        }
+      // Color index ER: 0=verde/rosso pieno, 1=chiaro/arancio, 2=giallo, 3=grigio
+      int erIdx = (er_val >= 0.60) ? 0 : (er_val >= 0.35) ? 1 : (er_val >= 0.15) ? 2 : 3;
 
       //--- ANTI-REPAINTING ---
+      // Barre chiuse (i < rates_total-1): tutto confermato e permanente.
+      // Barra corrente (i == rates_total-1): nessuna freccia, colore normale.
       if(i < rates_total - 1)
         {
-         // [v3.00] Segnali con filtro bias HTF + FLAT gate.
-         // v2.01 aveva solo bias; v3.00 aggiunge "&& !isFlat" per bloccare
-         // segnali durante le zone laterali rilevate dal flat detector sopra.
-         bool isBuy  = (src1 < t1) && (src > trail) && biasLong  && !isFlat;
-         bool isSell = (src1 > t1) && (src < trail) && biasShort && !isFlat;
+         //--- Segnali con filtro bias HTF ---
+         bool isBuy  = (src1 < t1) && (src > trail) && biasLong;
+         bool isSell = (src1 > t1) && (src < trail) && biasShort;
 
-         // [v4.00] BiasGate: tagga il segnale come con-bias o contro-bias.
-         // L'EA usa B_BiasGate per decidere: 1.0=apri trade, 0.0=solo chiudi.
-         // Crossover RAW (senza bias) per rilevare segnali bloccati.
-         bool rawBuy  = (src1 < t1) && (src > trail) && !isFlat;
-         bool rawSell = (src1 > t1) && (src < trail) && !isFlat;
+         //--- Frecce colorate per ER ---
+         B_Buy[i]     = isBuy  ? (low[i]  - g_atr[i] * 0.5) : EMPTY_VALUE;
+         B_BuyClr[i]  = (double)erIdx;
+         B_Sell[i]    = isSell ? (high[i] + g_atr[i] * 0.5) : EMPTY_VALUE;
+         B_SellClr[i] = (double)erIdx;
 
-         if(rawBuy)
-            B_BiasGate[i] = biasLong ? 1.0 : 0.0;
-         else if(rawSell)
-            B_BiasGate[i] = biasShort ? 1.0 : 0.0;
-         else
-            B_BiasGate[i] = EMPTY_VALUE;
-
-         // Bias Contra marker ◆: visibile su crossover bloccati dal bias HTF.
-         // !isBuy è ridondante (isBuy = rawBuy && biasLong) ma difensivo.
-         if(rawBuy && !biasLong && !isBuy)
-           { B_BiasContra[i] = high[i] + g_atr[i] * 0.3; B_BiasContraClr[i] = 0.0; }
-         else if(rawSell && !biasShort && !isSell)
-           { B_BiasContra[i] = low[i] - g_atr[i] * 0.3; B_BiasContraClr[i] = 1.0; }
-         else
-           { B_BiasContra[i] = EMPTY_VALUE; B_BiasContraClr[i] = 0.0; }
-
-         // [v3.00] Sistema frecce multiple basato su ER.
-         // v2.01: 1 freccia BUY + 1 freccia SELL (Plot 1-2, B_Buy/B_Sell).
-         // v3.00: 7 plot arrow (Plot 1-7): Buy1/2/3, Sell1/2/3, Caution.
-         //   ER >= 0.60 → 3 frecce (forte):    Buy1+Buy2+Buy3
-         //   ER >= 0.35 → 2 frecce (moderato): Buy1+Buy2
-         //   ER >= 0.15 → 1 freccia (debole):  Buy1
-         //   ER <  0.15 → 1 freccia + ■ caution marker
-         // Frecce impilate verticalmente con gap = ATR×0.35.
-         // I colori variano per soglia ER (4 livelli per Buy, 4 per Sell).
-         double buyBase  = low[i]  - g_atr[i] * 0.5;
-         double sellBase = high[i] + g_atr[i] * 0.5;
-         double arrowGap = g_atr[i] * 0.35;
-
-         // --- BUY arrows ---
-         if(isBuy)
-           {
-            // Buy1: sempre (primaria)
-            B_Buy1[i] = buyBase;
-            if(er_val >= 0.60)       B_Buy1Clr[i] = 0.0;  // verde pieno
-            else if(er_val >= 0.35)  B_Buy1Clr[i] = 1.0;  // verde chiaro
-            else if(er_val >= 0.15)  B_Buy1Clr[i] = 2.0;  // giallo
-            else                     B_Buy1Clr[i] = 3.0;  // arancione
-
-            // Buy2: solo se ER >= 0.35
-            if(er_val >= 0.60)
-              { B_Buy2[i] = buyBase - arrowGap; B_Buy2Clr[i] = 0.0; }
-            else if(er_val >= 0.35)
-              { B_Buy2[i] = buyBase - arrowGap; B_Buy2Clr[i] = 1.0; }
-            else
-              { B_Buy2[i] = EMPTY_VALUE; B_Buy2Clr[i] = 0.0; }
-
-            // Buy3: solo se ER >= 0.60
-            if(er_val >= 0.60)
-              { B_Buy3[i] = buyBase - arrowGap * 2; B_Buy3Clr[i] = 0.0; }
-            else
-              { B_Buy3[i] = EMPTY_VALUE; B_Buy3Clr[i] = 0.0; }
-
-            // Caution: solo se ER < 0.15
-            if(er_val < 0.15)
-              { B_Caution[i] = high[i] + g_atr[i] * 0.3; B_CautionClr[i] = 0.0; }
-            else
-              { B_Caution[i] = EMPTY_VALUE; B_CautionClr[i] = 0.0; }
-           }
-         else
-           {
-            B_Buy1[i] = EMPTY_VALUE; B_Buy1Clr[i] = 0.0;
-            B_Buy2[i] = EMPTY_VALUE; B_Buy2Clr[i] = 0.0;
-            B_Buy3[i] = EMPTY_VALUE; B_Buy3Clr[i] = 0.0;
-           }
-
-         // --- SELL arrows ---
-         if(isSell)
-           {
-            B_Sell1[i] = sellBase;
-            if(er_val >= 0.60)       B_Sell1Clr[i] = 0.0;  // rosso pieno
-            else if(er_val >= 0.35)  B_Sell1Clr[i] = 1.0;  // arancione
-            else if(er_val >= 0.15)  B_Sell1Clr[i] = 2.0;  // giallo
-            else                     B_Sell1Clr[i] = 3.0;  // arancione scuro
-
-            if(er_val >= 0.60)
-              { B_Sell2[i] = sellBase + arrowGap; B_Sell2Clr[i] = 0.0; }
-            else if(er_val >= 0.35)
-              { B_Sell2[i] = sellBase + arrowGap; B_Sell2Clr[i] = 1.0; }
-            else
-              { B_Sell2[i] = EMPTY_VALUE; B_Sell2Clr[i] = 0.0; }
-
-            if(er_val >= 0.60)
-              { B_Sell3[i] = sellBase + arrowGap * 2; B_Sell3Clr[i] = 0.0; }
-            else
-              { B_Sell3[i] = EMPTY_VALUE; B_Sell3Clr[i] = 0.0; }
-
-            if(er_val < 0.15)
-              { B_Caution[i] = low[i] - g_atr[i] * 0.3; B_CautionClr[i] = 1.0; }
-            else if(!isBuy)
-              { B_Caution[i] = EMPTY_VALUE; B_CautionClr[i] = 0.0; }
-           }
-         else
-           {
-            B_Sell1[i] = EMPTY_VALUE; B_Sell1Clr[i] = 0.0;
-            B_Sell2[i] = EMPTY_VALUE; B_Sell2Clr[i] = 0.0;
-            B_Sell3[i] = EMPTY_VALUE; B_Sell3Clr[i] = 0.0;
-            if(!isBuy)
-              { B_Caution[i] = EMPTY_VALUE; B_CautionClr[i] = 0.0; }
-           }
-
-         //--- Entry level line ---
+         //--- Entry level line: carry-forward fino al prossimo segnale ---
          if(isBuy || isSell)
             g_entryLevel = close[i];
          B_EntryLine[i] = g_entryLevel;
 
-         //--- Stato posizione (per EA) ---
-         // [v3.52 fix] B_State rispetta il filtro bias HTF.
-         // In v3.51 il crossover raw (src vs t1) cambiava B_State anche quando
-         // il bias bloccava il segnale → l'EA chiudeva posizioni su pullback
-         // piccoli contro-trend mentre l'HTF era ancora in trending.
-         // Ora B_State cambia SOLO se isBuy/isSell sono effettivamente attivi.
-         if(isBuy)
+         //--- Stato posizione (per EA, buffer 13) ---
+         if(src1 < t1 && src > t1)
             B_State[i] = 1.0;
-         else if(isSell)
+         else if(src1 > t1 && src < t1)
             B_State[i] = -1.0;
          else
             B_State[i] = B_State[i - 1];
 
-         //--- Candele colorate: solo 3 colori (teal/coral/giallo) ---
+         //--- Candele colorate ---
+         // Barra trigger (BUY o SELL): GIALLA — indice 2 = C'255,235,59'.
          if(InpColorBars)
            {
             B_CO[i]   = open[i];
@@ -2299,34 +1472,15 @@ int OnCalculate(const int rates_total,
         }
       else
         {
-         //--- Barra corrente (aperta) ---
-         B_Buy1[i] = EMPTY_VALUE;  B_Buy1Clr[i] = 0.0;
-         B_Buy2[i] = EMPTY_VALUE;  B_Buy2Clr[i] = 0.0;
-         B_Buy3[i] = EMPTY_VALUE;  B_Buy3Clr[i] = 0.0;
-         B_Sell1[i] = EMPTY_VALUE; B_Sell1Clr[i] = 0.0;
-         B_Sell2[i] = EMPTY_VALUE; B_Sell2Clr[i] = 0.0;
-         B_Sell3[i] = EMPTY_VALUE; B_Sell3Clr[i] = 0.0;
-         B_Caution[i] = EMPTY_VALUE; B_CautionClr[i] = 0.0;
-         B_EntryLine[i] = g_entryLevel;
-         B_State[i] = B_State[i - 1];
+         //--- Barra corrente (aperta): zero frecce, zero marker, stato ereditato ---
+         B_Buy[i]       = EMPTY_VALUE;
+         B_BuyClr[i]    = 0.0;
+         B_Sell[i]      = EMPTY_VALUE;
+         B_SellClr[i]   = 0.0;
+         B_EntryLine[i] = g_entryLevel;    // carry-forward (non repaint — livello già confermato)
+         B_State[i]     = B_State[i - 1];
 
-         // [v4.00] Barra corrente: buffer BiasGate + BiasContra = no signal
-         B_BiasGate[i]      = EMPTY_VALUE;
-         B_BiasContra[i]    = EMPTY_VALUE;
-         B_BiasContraClr[i] = 0.0;
-         // [v4.01 fix] Chandelier: carry-forward livelli confermati (non repaint).
-         // Era InpShowChandelier (input immutabile) → g_dash_vis_chand (toggle runtime).
-         if(g_dash_vis_chand)
-           {
-            B_ChandLong[i]  = (src > trail) ? g_chandLastLong  : EMPTY_VALUE;
-            B_ChandShort[i] = (src < trail) ? g_chandLastShort : EMPTY_VALUE;
-           }
-         else
-           {
-            B_ChandLong[i]  = EMPTY_VALUE;
-            B_ChandShort[i] = EMPTY_VALUE;
-           }
-
+         //--- Barra corrente: colore normale (teal/coral), NO giallo ---
          if(InpColorBars)
            {
             B_CO[i]   = open[i];
@@ -2338,17 +1492,14 @@ int OnCalculate(const int rates_total,
         }
      }
 
-   // [v3.00] Alert deduplicati — rinominati B_Buy→B_Buy1, B_Sell→B_Sell1
-   // per coerenza con il sistema multi-freccia. La logica è invariata:
-   // controlla solo la freccia primaria (Buy1/Sell1) per triggerare l'alert.
    //=== STEP 4: Alert deduplicati ===
    if(prev_calculated > 0 && rates_total >= 2)
      {
       int last = rates_total - 2;
       if(time[last] != g_lastAlert)
         {
-         bool alertBuy  = (B_Buy1[last]  != EMPTY_VALUE);
-         bool alertSell = (B_Sell1[last] != EMPTY_VALUE);
+         bool alertBuy  = (B_Buy[last]  != EMPTY_VALUE);
+         bool alertSell = (B_Sell[last] != EMPTY_VALUE);
          if(alertBuy || alertSell)
            {
             string dir = alertBuy ? "BUY ▲" : "SELL ▼";

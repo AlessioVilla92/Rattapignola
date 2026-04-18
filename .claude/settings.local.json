@@ -8,7 +8,8 @@
       "Bash(dir:*)",
       "Bash(where:*)",
       "Bash(reg query:*)",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "Bash(/tmp/count_params.txt << 'EOF'\nInpTFPreset,      InpKeyValue,      InpATRPeriod,              \\(1-3\\)\nInpSrcType,       InpHMAPeriod,                                \\(4-5\\)\nInpKAMA_N,        InpKAMA_Fast,     InpKAMA_Slow,              \\(6-8\\)\nInpJMA_Period,    InpJMA_Phase,                                \\(9-10\\)\nfalse, PERIOD_H1,                                              \\(11-12\\)\nfalse, 0.0, 0.20, 8, false,                                    \\(13-17\\)\nfalse, 2.5, true,                                              \\(18-20\\)\nfalse, false,                                                  \\(21-22\\)\nfalse, false,                                                  \\(23-24\\)\nInpThemeBG, InpThemeFG, InpThemeGrid,                          \\(25-27\\)\nInpThemeBullCandl, InpThemeBearCandl,                          \\(28-29\\)\nfalse, false,                                                  \\(30-31\\)\nfalse, false                                                   \\(32-33\\)\nEOF)"
     ]
   }
 }
