@@ -59,6 +59,31 @@
 //|                                                                  |
 //| CHANGELOG                                                        |
 //|                                                                  |
+//| v4.03 — Polish: dashboard ER avg + banner nav + cleanup          |
+//|   - Dashboard: ER visualizzato come media su InpFlatERBars barre |
+//|     (era istantaneo → confusione quando FLAT attivo ma ER ist.>  |
+//|     soglia). Ora coerente con la metrica usata in detection.     |
+//|   - #property version allineato a 4.02→4.03 (era rimasto 4.01).  |
+//|   - Banner ASCII (A/B/C/D/E/F) nel main loop OnCalculate per     |
+//|     navigazione visiva rapida delle sezioni funzionali.          |
+//|   - Commenti potenziati: anti-repainting gate, entry level line, |
+//|     B_State, barra formante carry-forward, bias gate/contra.     |
+//|   - Cleanup: rimossa ridondanza in UTBotPresetsInit case MANUAL  |
+//|     (g_eff_flatMinWidth ora fa default semplice, override globale|
+//|     post-switch unifica il path per tutti i preset).             |
+//|                                                                  |
+//| v4.02 — Flat Zone detection ATR-relativa (auto-adattiva)         |
+//|   - Nuovo InpFlatKATR=0.75: soglia = k × 2 × KeyValue × ATR_m20  |
+//|     auto-scala per TF/simbolo/volatilità (no pips assoluti).     |
+//|   - Nuovo InpFlatATRLong=20: barre per ATR medio lungo.          |
+//|   - Fallback legacy: se InpFlatKATR=0 usa g_eff_flatMinWidth     |
+//|     in pips come prima (backward compat).                        |
+//|   - Dashboard: diagnostica doppia (ChWidth + ER avg) con colori  |
+//|     verde/rosso per identificare quale condizione blocca flat.   |
+//|   - Fix radice bug "canale azzurro mai visibile": soglie pips    |
+//|     dei preset erano troppo strette (chWidth tipico ≈ 2xATR,     |
+//|     soglia 3.5p su M5 vs ATR tipico 3-8p → isFlat sempre false). |
+//|                                                                  |
 //| v4.01 — Toggle CHAND sempre visibile + logico                    |
 //|   - Pulsante CHAND nel dashboard: sempre visibile (era nascosto  |
 //|     quando InpShowChandelier=false → impossibile attivarlo).     |
@@ -152,9 +177,9 @@
 //|                                                                  |
 //+------------------------------------------------------------------+
 #property copyright "Alessio / AcquaDulza ecosystem"
-#property version   "4.01"
+#property version   "4.03"
 #property description "UT Bot Alerts — KAMA/HMA/JMA + anti-repainting + frecce multi-ER"
-#property description "v4.01: toggle CHAND da dashboard sempre visibile e logico"
+#property description "v4.03: Flat Zone ATR-relativa + dashboard ER avg + banner nav + cleanup"
 #property description "BUY/SELL su barre chiuse. Canale laterale blu. Entry marker viola."
 #property indicator_chart_window
 #property indicator_buffers 35
@@ -360,7 +385,9 @@ input group "╚═════════════════════�
 // e il canale viene visualizzato in blu sul chart (DRAW_FILLING).
 // InpFlatMinWidth=0 usa il valore auto dal preset TF (g_eff_flatMinWidth).
 input bool            InpFlatDetect     = true;    // Attiva rilevamento zona FLAT
-input double          InpFlatMinWidth   = 0.0;     // Min Channel Width pips (0=auto-preset)
+input double          InpFlatKATR       = 0.75;    // [v4.02] Soglia ATR-relativa (0=usa pips)
+input int             InpFlatATRLong    = 20;      // [v4.02] Barre per ATR medio lungo
+input double          InpFlatMinWidth   = 0.0;     // Min Channel Width pips (0=auto-preset, fallback se KATR=0)
 input double          InpFlatERThresh   = 0.20;    // ER medio soglia per FLAT
 input int             InpFlatERBars     = 8;       // Barre per media ER
 input bool            InpShowFlatZone   = true;    // Mostra zona FLAT (canale blu)
@@ -719,12 +746,13 @@ void UTBotPresetsInit()
          g_eff_kamaSlow    = InpKAMA_Slow;
          g_eff_jmaPeriod   = InpJMA_Period;
          g_eff_jmaPhase    = InpJMA_Phase;
-         g_eff_flatMinWidth = (InpFlatMinWidth > 0.0) ? InpFlatMinWidth : 8.0;
+         g_eff_flatMinWidth = 8.0;        // default MANUAL (override post-switch se InpFlatMinWidth>0)
          g_eff_biasTF      = InpBiasTF;   // [v3.52] MANUAL: utente decide
          break;
      }
 
-   // Override FlatMinWidth da input se l'utente l'ha specificato (> 0)
+   // Override FlatMinWidth da input se l'utente l'ha specificato (> 0).
+   // Vale per TUTTI i preset (M1-H4 + MANUAL): l'input > 0 vince sempre.
    if(InpFlatMinWidth > 0.0)
       g_eff_flatMinWidth = InpFlatMinWidth;
   }
@@ -903,7 +931,7 @@ int OnInit()
                             false, false,                        // Alert OFF
                             false, false);                       // Dashboard OFF, Trail OFF
       if(g_htfHandle == INVALID_HANDLE)
-         Print("[UTBot v4.01] WARN: handle HTF bias non valido, bias disabilitato");
+         Print("[UTBot v4.03] WARN: handle HTF bias non valido, bias disabilitato");
      }
 
    //--- Chart theme (anti-flash con GlobalVariables)
@@ -977,7 +1005,7 @@ int OnInit()
 
    // Log completo dei parametri effettivi nel tab Experts.
    // Utile per verificare quale preset è attivo e i valori KAMA applicati.
-   Print("[UTBot v4.01] Preset=", EnumToString(InpTFPreset),
+   Print("[UTBot v4.03] Preset=", EnumToString(InpTFPreset),
          " | Key=", DoubleToString(g_eff_keyValue, 1),
          " | ATR=", g_eff_atrPeriod,
          " | Src=", EnumToString(g_eff_srcType),
@@ -1383,7 +1411,7 @@ void UpdateUTBDashboard(bool forceUpdate = false)
    int row = 0;
 
    //--- HEADER ---
-   UTBSetRow(row++, "UTBot v4.01 | " + _Symbol + " | " + EnumToString(_Period),
+   UTBSetRow(row++, "UTBot v4.03 | " + _Symbol + " | " + EnumToString(_Period),
              C'70,130,255', 10);
    UTBSetRow(row++, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", C'60,70,100', 7);
 
@@ -1550,6 +1578,8 @@ void UpdateUTBDashboard(bool forceUpdate = false)
    //   < 0.5 → FLAT (laterale, colore blu)
    //   >= 0.5 → ACTIVE (trending, colore verde)
    //--- FLAT STATUS ---
+   // [v4.02] Dashboard diagnostico esteso: mostra ChWidth + ER avg con colori
+   // verde/rosso per far capire quale condizione blocca la flat detection.
    if(InpFlatDetect)
      {
       int rt2 = g_dash_ratesTotal;
@@ -1559,16 +1589,54 @@ void UpdateUTBDashboard(bool forceUpdate = false)
          double cwVal   = B_ChWidth[rt2 - 2];
          double cwPips  = cwVal / (_Point * ((_Digits == 3 || _Digits == 5) ? 10.0 : 1.0));
 
-         if(flatVal < 0.5) // FLAT
+         // [v4.02 fix] ER mostrato = stessa media usata da detection (InpFlatERBars barre).
+         // Prima era B_ER istantaneo → confusione quando regime=FLAT ma ER istantaneo > soglia.
+         int flatERBarsDash = MathMax(InpFlatERBars, 1);
+         double erVal = B_ER[rt2 - 2];
+         if(rt2 >= (flatERBarsDash + 2))
            {
-            UTBSetRow(row++, "Regime:  FLAT — laterale", C'100,150,220');
-            UTBSetRow(row++, "ChWidth: " + DoubleToString(cwPips, 1) + "p" +
-                      " < min " + DoubleToString(g_eff_flatMinWidth, 1) + "p", C'100,150,220');
+            double erSum = 0.0;
+            for(int k = 0; k < flatERBarsDash; k++)
+               erSum += B_ER[rt2 - 2 - k];
+            erVal = erSum / flatERBarsDash;
+           }
+
+         // Soglia attiva: ATR-relativa o pips legacy
+         double minPips;
+         string modeTxt;
+         if(InpFlatKATR > 0.0 && rt2 >= (InpFlatATRLong + 2))
+           {
+            double atrSum = 0.0;
+            for(int k = 0; k < InpFlatATRLong; k++)
+               atrSum += g_atr[rt2 - 2 - k];
+            double atrLong = atrSum / InpFlatATRLong;
+            double minPrice = InpFlatKATR * 2.0 * g_eff_keyValue * atrLong;
+            minPips = minPrice / (_Point * ((_Digits == 3 || _Digits == 5) ? 10.0 : 1.0));
+            modeTxt = "k=" + DoubleToString(InpFlatKATR, 2) + "xATR";
            }
          else
            {
+            minPips = g_eff_flatMinWidth;
+            modeTxt = "pips";
+           }
+
+         if(flatVal < 0.5) // FLAT
+           {
+            UTBSetRow(row++, "Regime:  FLAT — laterale", C'100,150,220');
+            UTBSetRow(row++, "ChWidth: " + DoubleToString(cwPips, 1) + "p < " +
+                      DoubleToString(minPips, 1) + "p (" + modeTxt + ")", C'100,150,220');
+            UTBSetRow(row++, "ER avg:  " + DoubleToString(erVal, 2) + " < " +
+                      DoubleToString(InpFlatERThresh, 2), C'100,150,220');
+           }
+         else // ACTIVE
+           {
             UTBSetRow(row++, "Regime:  ACTIVE — trending", C'50,220,120');
-            UTBSetRow(row++, "ChWidth: " + DoubleToString(cwPips, 1) + "p", C'150,165,185');
+            color cwClr = (cwPips < minPips) ? C'70,200,130' : C'220,100,100';
+            UTBSetRow(row++, "ChWidth: " + DoubleToString(cwPips, 1) + "p vs " +
+                      DoubleToString(minPips, 1) + "p (" + modeTxt + ")", cwClr);
+            color erClr = (erVal < InpFlatERThresh) ? C'70,200,130' : C'220,100,100';
+            UTBSetRow(row++, "ER avg:  " + DoubleToString(erVal, 2) + " vs " +
+                      DoubleToString(InpFlatERThresh, 2), erClr);
            }
         }
      }
@@ -1962,6 +2030,17 @@ int OnCalculate(const int rates_total,
    bool biasLong  = !g_biasEnabled || (htfStateCurrent > 0.5);
    bool biasShort = !g_biasEnabled || (htfStateCurrent < -0.5);
 
+   //═══════════════════════════════════════════════════════════════════
+   //  MAIN LOOP — Per ogni barra da trail_start a rates_total-1
+   //═══════════════════════════════════════════════════════════════════
+   //  Pipeline per barra:
+   //    (A) Trailing stop + per-bar HTF bias
+   //    (B) Metriche: Efficiency Ratio + Channel Width
+   //    (C) Flat detection + canale Donchian orizzontale
+   //    (D) Chandelier Exit Anchored (overlay trailing alternativo)
+   //    (E) Signal gating (solo su barre chiuse): bias + flat + ER
+   //    (F) Carry-forward sulla barra formante (anti-repainting)
+   //═══════════════════════════════════════════════════════════════════
    for(int i = trail_start; i < rates_total; i++)
      {
       double src   = g_src[i];
@@ -1969,6 +2048,11 @@ int OnCalculate(const int rates_total,
       double nLoss = g_eff_keyValue * g_atr[i];
       double t1    = B_Trail[i - 1];
 
+      //─── (A.1) TRAILING STOP — Porting fedele Pine UT Bot Alerts ──
+      // 4 rami: ratchet up/down in trend continuo, reset hard al flip.
+      // src/src1 = sorgente adattiva (KAMA/HMA/JMA/CLOSE) della barra.
+      // nLoss = KeyValue × ATR[i] = distanza stop dal prezzo.
+      //───────────────────────────────────────────────────────────────
       //--- Trailing stop 4 rami (Pine-fedele, invariato) ---
       double trail;
       if(src > t1 && src1 > t1)
@@ -1983,6 +2067,11 @@ int OnCalculate(const int rates_total,
       B_Trail[i]    = trail;
       B_TrailClr[i] = (src > trail) ? 0.0 : 1.0;
 
+      //─── (A.2) PER-BAR HTF BIAS — Anti-repainting backtest ────────
+      // In fullRecalc ogni barra storica usa il bias dell'HTF AL SUO
+      // TEMPO (non quello odierno) per backtest visivo fedele.
+      // iBarShift mappa il tempo LTF nell'indice HTF; +1 = barra chiusa.
+      //───────────────────────────────────────────────────────────────
       // [v3.50] Per-bar HTF bias durante fullRecalc.
       // Sovrascrivi biasLong/biasShort con lo stato HTF al momento della barra i.
       // iBarShift converte il tempo LTF nell'indice HTF. +1 = barra chiusa (anti-repainting).
@@ -2003,6 +2092,15 @@ int OnCalculate(const int rates_total,
          biasShort = !g_biasEnabled || (htfBarState < -0.5);
         }
 
+      //═══════════════════════════════════════════════════════════════
+      //  (B) METRICHE — Efficiency Ratio + Channel Width
+      //═══════════════════════════════════════════════════════════════
+      //  ER:       misura efficienza del prezzo (0=choppy, 1=trending)
+      //  chWidth:  ampiezza del canale del trailing (2 × nLoss)
+      //  Entrambi alimentano la Flat Detection qui sotto.
+      //═══════════════════════════════════════════════════════════════
+
+      //─── (B.1) EFFICIENCY RATIO (Kaufman windowed) ────────────────
       // [v3.00] Efficiency Ratio windowed (Kaufman) su close[].
       // In v2.01 l'ER era calcolato solo per SRC_KAMA (proxy |delta_src|/ATR
       // per le altre sorgenti). Ora TUTTE le sorgenti usano la formula
@@ -2021,21 +2119,46 @@ int OnCalculate(const int rates_total,
         }
       B_ER[i] = er_val;
 
+      //─── (B.2) CHANNEL WIDTH ──────────────────────────────────────
+      // Ampiezza del canale del trailing = 2 × nLoss = 2 × Key × ATR.
+      // Buffer esposto per EA + input a flat detection.
+      //───────────────────────────────────────────────────────────────
       // [v3.00] Channel Width = 2×nLoss. Buffer nuovo (B_ChWidth) esposto
       // per l'EA host via iCustom e usato internamente per flat detection.
       double chWidth = 2.0 * nLoss;
       B_ChWidth[i] = chWidth;
 
-      // [v3.00] Flat Detection — rileva zone laterali (ranging market).
-      // Doppia condizione: (1) canale stretto < minWidth pips  E  (2) ER medio basso.
-      // g_eff_flatMinWidth viene dal preset TF o dall'input utente.
-      // Quando isFlat=true → segnali BUY/SELL bloccati (FLAT gate, riga ~1736-1737)
-      // e zona blu disegnata con DRAW_FILLING (B_FlatFillUp/Dn).
-      double minWidthPrice = g_eff_flatMinWidth * _Point * (((_Digits == 3 || _Digits == 5) ? 10.0 : 1.0));
+      //═══════════════════════════════════════════════════════════════
+      //  (C) FLAT DETECTION — Gate doppio per mercato laterale
+      //═══════════════════════════════════════════════════════════════
+      //  Gate 1: chWidth < k × 2 × KeyValue × ATR_mediaN (contrazione
+      //          di volatilità relativa; auto-scala simbolo/TF)
+      //  Gate 2: erAvg < InpFlatERThresh (bassa efficienza)
+      //  Output: B_FlatState[i] (0=flat, 1=active), isFlat.
+      //  Effetti downstream:
+      //    • canale Donchian azzurro disegnato (visualizzazione)
+      //    • segnali BUY/SELL soppressi (signal gate)
+      //═══════════════════════════════════════════════════════════════
+      // [v4.02] Flat Detection — soglia ATR-relativa (auto-adattiva simbolo/TF).
+      // isFlat quando chWidth[i] < k × 2 × KeyValue × ATR_medio20 ≡ volatility contraction.
+      // Fallback legacy: se InpFlatKATR=0 usa g_eff_flatMinWidth in pips assoluti.
+      // [v4.02 note] InpFlatATRLong è la finestra della media ATR (default 20).
+      double minWidthPrice;
+      if(InpFlatKATR > 0.0 && i >= InpFlatATRLong)
+        {
+         double atrSum = 0.0;
+         for(int k = 0; k < InpFlatATRLong; k++)
+            atrSum += g_atr[i - k];
+         double atrLong = atrSum / InpFlatATRLong;
+         minWidthPrice = InpFlatKATR * 2.0 * g_eff_keyValue * atrLong;
+        }
+      else
+        {
+         minWidthPrice = g_eff_flatMinWidth * _Point * (((_Digits == 3 || _Digits == 5) ? 10.0 : 1.0));
+        }
+
       double erAvg = er_val;
-      // [v3.01 fix] MathMax(InpFlatERBars, 1) protegge da divisione per zero.
-      // Se utente imposta InpFlatERBars=0 → 0.0/0 = NaN (IEEE 754),
-      // NaN < threshold = false → flat detection silenziosamente disabilitata.
+      // [v3.01 fix] MathMax(InpFlatERBars, 1) protegge da NaN (0/0) se utente mette 0.
       int flatERBars = MathMax(InpFlatERBars, 1);
       if(InpFlatDetect && i >= flatERBars)
         {
@@ -2050,6 +2173,12 @@ int OnCalculate(const int rates_total,
                  && (erAvg < InpFlatERThresh);
       B_FlatState[i] = isFlat ? 0.0 : 1.0;
 
+      //─── FLAT ZONE VISUALIZATION — Donchian orizzontale ───────────
+      // Disegna un rettangolo azzurro (DRAW_FILLING) + 2 linee DOT
+      // bianche solo nelle barre dove isFlat=true. HH/LL congelati al
+      // primo bar flat, espansi se nuovi estremi entro la lateralità.
+      // EMPTY_VALUE fuori flat → MT5 interrompe il fill istantaneamente.
+      //───────────────────────────────────────────────────────────────
       //--- Flat zone visualization — Donchian orizzontale (v3.50) ---
       // [v3.50] Il canale usa HH/LL persistenti dall'inizio della lateralità.
       // Le bande sono ORIZZONTALI (si espandono solo se prezzo fa nuovo HH/LL).
@@ -2082,6 +2211,15 @@ int OnCalculate(const int rates_total,
         }
       g_wasFlatPrev = isFlat;
 
+      //═══════════════════════════════════════════════════════════════
+      //  (D) CHANDELIER EXIT ANCHORED — Trailing alternativo v4.00
+      //═══════════════════════════════════════════════════════════════
+      //  Overlay indipendente dal trailing principale.
+      //  Anchor HH/LL riazzerato ad ogni crossover trail.
+      //  Ratchet monodirezionale: Long MathMax, Short MathMin.
+      //  Volatility normalization opzionale (avgATR/ATR su 50 barre).
+      //  Output: B_ChandLong/B_ChandShort (Plot 13-14).
+      //═══════════════════════════════════════════════════════════════
       //--- Chandelier Exit Anchored (v4.00) ---
       // Trailing dal segnale UTBot più recente. HH/LL anchor resettato ad ogni
       // crossover trail. Ratchet: Long solo sale, Short solo scende.
@@ -2152,15 +2290,31 @@ int OnCalculate(const int rates_total,
          B_ChandShort[i] = EMPTY_VALUE;
         }
 
+      //═══════════════════════════════════════════════════════════════
+      //  (E) SIGNAL GATING — Solo barre CHIUSE (anti-repainting)
+      //═══════════════════════════════════════════════════════════════
+      //  Il branch `if(i < rates_total-1)` garantisce che ogni freccia
+      //  BUY/SELL, ogni cambio di B_State, ogni marker BiasContra venga
+      //  scritto SOLO su barre definitive. La barra formante (i ==
+      //  rates_total-1) cade nel branch else più sotto (sezione F) che
+      //  fa carry-forward senza ridisegnare.
+      //═══════════════════════════════════════════════════════════════
       //--- ANTI-REPAINTING ---
       if(i < rates_total - 1)
         {
+         //─── (E.1) SIGNAL GATES — crossover + bias HTF + flat ─────
+         // isBuy/isSell effettivi:  crossover AND bias OK AND non-flat.
+         // rawBuy/rawSell: crossover grezzo (senza bias) per BiasGate.
          // [v3.00] Segnali con filtro bias HTF + FLAT gate.
          // v2.01 aveva solo bias; v3.00 aggiunge "&& !isFlat" per bloccare
          // segnali durante le zone laterali rilevate dal flat detector sopra.
          bool isBuy  = (src1 < t1) && (src > trail) && biasLong  && !isFlat;
          bool isSell = (src1 > t1) && (src < trail) && biasShort && !isFlat;
 
+         //─── (E.2) BIAS GATE (buffer esposto EA) ──────────────────
+         // Tagga ogni crossover raw come con/contro bias HTF.
+         // L'EA legge B_BiasGate: 1.0=apri, 0.0=solo chiudi, EMPTY=skip.
+         //───────────────────────────────────────────────────────────
          // [v4.00] BiasGate: tagga il segnale come con-bias o contro-bias.
          // L'EA usa B_BiasGate per decidere: 1.0=apri trade, 0.0=solo chiudi.
          // Crossover RAW (senza bias) per rilevare segnali bloccati.
@@ -2174,6 +2328,10 @@ int OnCalculate(const int rates_total,
          else
             B_BiasGate[i] = EMPTY_VALUE;
 
+         //─── (E.3) BIAS CONTRA marker ◆ ───────────────────────────
+         // Segnale visivo: diamante sopra/sotto le barre con crossover
+         // bloccato dal bias HTF. Utile per riconoscere "quasi-segnali".
+         //───────────────────────────────────────────────────────────
          // Bias Contra marker ◆: visibile su crossover bloccati dal bias HTF.
          // !isBuy è ridondante (isBuy = rawBuy && biasLong) ma difensivo.
          if(rawBuy && !biasLong && !isBuy)
@@ -2183,6 +2341,13 @@ int OnCalculate(const int rates_total,
          else
            { B_BiasContra[i] = EMPTY_VALUE; B_BiasContraClr[i] = 0.0; }
 
+         //─── (E.4) MULTI-ER ARROWS — Forza segnale ────────────────
+         // Impila 1-3 frecce verticali a seconda del valore ER:
+         //   ≥0.60 → 3 frecce (trend forte)
+         //   ≥0.35 → 2 frecce (moderato)
+         //   ≥0.15 → 1 freccia (debole)
+         //   <0.15 → 1 freccia + ■ caution marker
+         //───────────────────────────────────────────────────────────
          // [v3.00] Sistema frecce multiple basato su ER.
          // v2.01: 1 freccia BUY + 1 freccia SELL (Plot 1-2, B_Buy/B_Sell).
          // v3.00: 7 plot arrow (Plot 1-7): Buy1/2/3, Sell1/2/3, Caution.
@@ -2268,11 +2433,21 @@ int OnCalculate(const int rates_total,
               { B_Caution[i] = EMPTY_VALUE; B_CautionClr[i] = 0.0; }
            }
 
+         //─── (E.5) ENTRY LEVEL LINE ──────────────────────────────
+         // Memorizza il close del segnale più recente. Plot 8 disegna
+         // una riga orizzontale tratteggiata viola che persiste fino al
+         // prossimo segnale. Usata per calcolare P/L live nel dashboard.
+         //──────────────────────────────────────────────────────────
          //--- Entry level line ---
          if(isBuy || isSell)
             g_entryLevel = close[i];
          B_EntryLine[i] = g_entryLevel;
 
+         //─── (E.6) B_State — STATO POSIZIONE per EA host ─────────
+         // +1.0=long, -1.0=short, 0=neutro. Cambia SOLO se isBuy/isSell
+         // sono effettivi (post bias+flat gate) — fix v3.52 contro
+         // chiusure spurie su pullback.
+         //──────────────────────────────────────────────────────────
          //--- Stato posizione (per EA) ---
          // [v3.52 fix] B_State rispetta il filtro bias HTF.
          // In v3.51 il crossover raw (src vs t1) cambiava B_State anche quando
@@ -2286,6 +2461,9 @@ int OnCalculate(const int rates_total,
          else
             B_State[i] = B_State[i - 1];
 
+         //─── (E.7) CANDELE COLORATE ──────────────────────────────
+         // 3 colori: teal (bull), coral (bear), giallo (trigger segnale).
+         //──────────────────────────────────────────────────────────
          //--- Candele colorate: solo 3 colori (teal/coral/giallo) ---
          if(InpColorBars)
            {
@@ -2299,6 +2477,17 @@ int OnCalculate(const int rates_total,
         }
       else
         {
+         //═══════════════════════════════════════════════════════════
+         //  (F) BARRA FORMANTE — Carry-forward anti-repainting
+         //═══════════════════════════════════════════════════════════
+         //  Su i == rates_total-1 (barra in formazione):
+         //    • Nessuna freccia nuova (restano EMPTY_VALUE)
+         //    • Entry/B_State/Chandelier → copia dal bar chiuso prec.
+         //    • BiasGate/BiasContra → EMPTY_VALUE (niente segnali)
+         //    • Candele → colore trail-coerente senza trigger
+         //  Così il trader non vede frecce "in movimento" che cambiano
+         //  posizione finché la barra non chiude.
+         //═══════════════════════════════════════════════════════════
          //--- Barra corrente (aperta) ---
          B_Buy1[i] = EMPTY_VALUE;  B_Buy1Clr[i] = 0.0;
          B_Buy2[i] = EMPTY_VALUE;  B_Buy2Clr[i] = 0.0;
@@ -2338,6 +2527,14 @@ int OnCalculate(const int rates_total,
         }
      }
 
+   //═══════════════════════════════════════════════════════════════════
+   //  STEP 4 — ALERT DEDUPLICATI (popup + push notification)
+   //═══════════════════════════════════════════════════════════════════
+   //  Scatta solo su barra chiusa (rates_total-2) E solo se non è già
+   //  stato triggerato su questo timestamp (g_lastAlert dedup).
+   //  Controlla solo la freccia primaria Buy1/Sell1 — multi-freccia
+   //  sono derivate, non aggiungono trigger distinti.
+   //═══════════════════════════════════════════════════════════════════
    // [v3.00] Alert deduplicati — rinominati B_Buy→B_Buy1, B_Sell→B_Sell1
    // per coerenza con il sistema multi-freccia. La logica è invariata:
    // controlla solo la freccia primaria (Buy1/Sell1) per triggerare l'alert.
