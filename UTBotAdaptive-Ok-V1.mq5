@@ -59,6 +59,17 @@
 //|                                                                  |
 //| CHANGELOG                                                        |
 //|                                                                  |
+//| v4.05 — Bias fix + Chandelier default ON + logging completo      |
+//|   - FIX CRITICO BIAS: quando toggle BIAS ON da dashboard,        |
+//|     CopyBuffer fallito → htfStateCurrent=0 → biasLong=false →   |
+//|     TUTTI i segnali soppressi. Fix: || !htfAvailable passthrough.|
+//|   - InpShowChandelier default true (era false). Chandelier       |
+//|     visibile all'avvio senza bisogno di attivare da dashboard.   |
+//|   - Logging completo: OnInit (tutti i parametri), fullRecalc     |
+//|     (evento + riepilogo segnali/flat/chand), HTF Bias            |
+//|     (CopyBuffer status + WARN), Dashboard toggle (stato tutti    |
+//|     i toggle), contatori per-recalc (buy/sell/blocked/flat/X).   |
+//|                                                                  |
 //| v4.04 — Flat Zone guard + Chandelier Exit markers                |
 //|   - Flat Zone: guard Donchian max-width. Se il range accumulato  |
 //|     (HH-LL) supera minWidthPrice, isFlat=false. Previene bande   |
@@ -69,6 +80,9 @@
 //|   - Buffer 35-36 (ChandExit + color). indicator_buffers 37.      |
 //|   - FIX iCustom HTF: era 33 param (mancavano ATRLong+MinWidth),  |
 //|     ora 36 con ordine corretto + InpChandExitMode.               |
+//|   - FIX BIAS toggle: se CopyBuffer HTF fallisce o dati non       |
+//|     pronti, htfStateCurrent=0 bloccava TUTTI i segnali.          |
+//|     Ora || !htfAvailable fa passthrough (no bias = no filtro).   |
 //|                                                                  |
 //| v4.03 — Polish: dashboard ER avg + banner nav + cleanup          |
 //|   - Dashboard: ER visualizzato come media su InpFlatERBars barre |
@@ -189,9 +203,9 @@
 //|                                                                  |
 //+------------------------------------------------------------------+
 #property copyright "Alessio / AcquaDulza ecosystem"
-#property version   "4.04"
+#property version   "4.05"
 #property description "UT Bot Alerts — KAMA/HMA/JMA + anti-repainting + frecce multi-ER"
-#property description "v4.03: Flat Zone ATR-relativa + dashboard ER avg + banner nav + cleanup"
+#property description "v4.05: Bias fix + Chandelier default ON + logging completo"
 #property description "BUY/SELL su barre chiuse. Canale laterale blu. Entry marker viola."
 #property indicator_chart_window
 #property indicator_buffers 37
@@ -422,7 +436,7 @@ input group "╔═════════════════════�
 input group "║  📏 CHANDELIER EXIT OVERLAY                              ║"
 input group "╚═══════════════════════════════════════════════════════════╝"
 
-input bool            InpShowChandelier = false;     // Mostra Chandelier Exit (overlay)
+input bool            InpShowChandelier = true;      // Mostra Chandelier Exit (overlay)
 input double          InpChandMult      = 2.5;       // Chandelier ATR multiplier
 input bool            InpChandVolNorm   = true;      // Normalizzazione volatilità ATR
 input ENUM_CHAND_EXIT_MODE InpChandExitMode = CHAND_EXIT_LOWHIGH; // [v4.04] Modalità exit Chandelier
@@ -974,7 +988,7 @@ int OnInit()
                             false, false,                        // Alert OFF
                             false, false);                       // Dashboard OFF, Trail OFF
       if(g_htfHandle == INVALID_HANDLE)
-         Print("[UTBot v4.04] WARN: handle HTF bias non valido, bias disabilitato");
+         Print("[UTBot v4.05] WARN: handle HTF bias non valido, bias disabilitato");
      }
 
    //--- Chart theme (anti-flash con GlobalVariables)
@@ -1048,7 +1062,7 @@ int OnInit()
 
    // Log completo dei parametri effettivi nel tab Experts.
    // Utile per verificare quale preset è attivo e i valori KAMA applicati.
-   Print("[UTBot v4.04] Preset=", EnumToString(InpTFPreset),
+   Print("[UTBot v4.05] Preset=", EnumToString(InpTFPreset),
          " | Key=", DoubleToString(g_eff_keyValue, 1),
          " | ATR=", g_eff_atrPeriod,
          " | Src=", EnumToString(g_eff_srcType),
@@ -1082,6 +1096,55 @@ int OnInit()
       InitUTBDashboard();
       UpdateUTBDashboard(true);
      }
+
+   //--- [v4.04] LOGGING COMPLETO OnInit ---
+   Print("═══════════════════════════════════════════════════════════");
+   Print("[UTBot v4.05] INIT — ", _Symbol, " ", EnumToString(_Period));
+   Print("───────── CORE ─────────");
+   Print("  KeyValue=", DoubleToString(g_eff_keyValue, 2),
+         "  ATRPeriod=", g_eff_atrPeriod,
+         "  Source=", EnumToString(g_eff_srcType),
+         "  Warmup=", g_warmup);
+   Print("  KAMA(N=", g_eff_kamaN, " Fast=", g_eff_kamaFast, " Slow=", g_eff_kamaSlow, ")",
+         "  JMA(P=", g_eff_jmaPeriod, " Ph=", g_eff_jmaPhase, ")",
+         "  HMA=", InpHMAPeriod);
+   Print("───────── BIAS HTF ─────────");
+   Print("  Enabled=", InpUseBias,
+         "  BiasTF=", EnumToString(g_eff_biasTF),
+         "  Handle=", g_htfHandle,
+         (g_htfHandle == INVALID_HANDLE ? " (INVALID!)" : " (OK)"));
+   if(_Period == g_eff_biasTF)
+      Print("  WARN: periodo corrente == biasTF → handle non creato (self-reference)");
+   Print("───────── FLAT DETECTION ─────────");
+   Print("  Detect=", InpFlatDetect,
+         "  KATR=", DoubleToString(InpFlatKATR, 2),
+         "  ATRLong=", InpFlatATRLong,
+         "  MinWidth=", DoubleToString(InpFlatMinWidth, 1), " pips",
+         "  ERThresh=", DoubleToString(InpFlatERThresh, 2),
+         "  ERBars=", InpFlatERBars);
+   Print("  ShowFlatZone=", InpShowFlatZone);
+   Print("───────── CHANDELIER EXIT ─────────");
+   Print("  Show=", InpShowChandelier,
+         "  Mult=", DoubleToString(InpChandMult, 1),
+         "  VolNorm=", InpChandVolNorm,
+         "  ExitMode=", EnumToString(InpChandExitMode));
+   Print("───────── VISUAL ─────────");
+   Print("  ColorBars=", InpColorBars,
+         "  Arrows=", InpShowArrows,
+         "  Theme=", InpApplyTheme,
+         "  Grid=", InpShowGrid,
+         "  Dashboard=", InpShowDashboard,
+         "  TrailLine=", InpShowTrailLine);
+   Print("───────── BUFFERS ─────────");
+   Print("  indicator_buffers=37  indicator_plots=17");
+   Print("  Plot 0: Trail (COLOR_LINE)  |  Plot 1-3: Buy1-3 (COLOR_ARROW)");
+   Print("  Plot 4-6: Sell1-3 (COLOR_ARROW)  |  Plot 7: Caution");
+   Print("  Plot 8: EntryLine  |  Plot 9: FlatFill  |  Plot 10-11: FlatLines");
+   Print("  Plot 12: Candles (COLOR_CANDLES)  |  Plot 13-14: ChandLong/Short");
+   Print("  Plot 15: BiasContra  |  Plot 16: ChandExit (X mark)");
+   Print("───────── ALERTS ─────────");
+   Print("  Popup=", InpAlertPopup, "  Push=", InpAlertPush);
+   Print("═══════════════════════════════════════════════════════════");
 
    return(INIT_SUCCEEDED);
   }
@@ -1868,6 +1931,17 @@ void OnChartEvent(const int id, const long &lparam,
       g_forceRecalcCounter++;  // [v4.01] forza fullRecalc al prossimo tick
      }
 
+   // [v4.04] LOG Dashboard toggle
+   Print("[UTBot] DASHBOARD TOGGLE: ", btn_id,
+         "  TRAIL=", g_dash_vis_trail,
+         "  ARROWS=", g_dash_vis_arrows,
+         "  ENTRY=", g_dash_vis_entry,
+         "  CANDLES=", g_dash_vis_candles,
+         "  FLAT=", g_dash_vis_flatzone,
+         "  BIAS=", g_dash_vis_bias, "(enabled=", g_biasEnabled, ")",
+         "  CHAND=", g_dash_vis_chand,
+         "  forceRecalc=", g_forceRecalcCounter);
+
    UpdateUTBDashboard(true);
    ChartRedraw();
   }
@@ -1921,6 +1995,12 @@ int OnCalculate(const int rates_total,
       g_wasFlatPrev   = false;
       g_flatRangeHigh = 0;
       g_flatRangeLow  = 0;
+      // [v4.04] LOG fullRecalc
+      Print("[UTBot] ══ FULL RECALC ══ rates=", rates_total,
+            "  prev=", prev_calculated,
+            "  forceCounter=", g_forceRecalcCounter,
+            "  biasEnabled=", g_biasEnabled,
+            "  chandVis=", g_dash_vis_chand);
      }
 
    //=== STEP 1: ATR Wilder (RMA) — usa g_eff_atrPeriod ===
@@ -2064,6 +2144,8 @@ int OnCalculate(const int rates_total,
            }
          if(htfCopied > 1)
             htfStateCurrent = htfStateArr[1];
+         else
+            htfAvailable = false;  // [v4.04 fix] CopyBuffer fallito o <2 barre → no bias
         }
       else
         {
@@ -2071,12 +2153,37 @@ int OnCalculate(const int rates_total,
          double tmp[1];
          if(CopyBuffer(g_htfHandle, 27, 1, 1, tmp) == 1)
             htfStateCurrent = tmp[0];
+         else
+            htfAvailable = false;  // [v4.04 fix] dato non pronto → no bias questo tick
         }
      }
 
    g_lastHtfState = htfStateCurrent;   // per dashboard
-   bool biasLong  = !g_biasEnabled || (htfStateCurrent > 0.5);
-   bool biasShort = !g_biasEnabled || (htfStateCurrent < -0.5);
+   // [v4.04 fix] Se dati HTF non disponibili (CopyBuffer fallito, handle invalido,
+   // o child non ancora calcolato): NON bloccare segnali. Senza questo guard,
+   // htfStateCurrent=0.0 con g_biasEnabled=true → biasLong=false → TUTTI i
+   // segnali soppressi. Con || !htfAvailable, l'assenza di dati = "nessun filtro".
+   bool biasLong  = !g_biasEnabled || !htfAvailable || (htfStateCurrent > 0.5);
+   bool biasShort = !g_biasEnabled || !htfAvailable || (htfStateCurrent < -0.5);
+
+   // [v4.04] LOG HTF Bias (solo su fullRecalc per non spammare)
+   if(fullRecalc && g_biasEnabled)
+     {
+      Print("[UTBot] ── HTF BIAS ── handle=", g_htfHandle,
+            "  htfAvailable=", htfAvailable,
+            "  htfCopied=", htfCopied,
+            "  htfStateCurrent=", DoubleToString(htfStateCurrent, 1),
+            "  biasLong=", biasLong,
+            "  biasShort=", biasShort);
+      if(!htfAvailable)
+         Print("[UTBot]    WARN: dati HTF non disponibili → bias disattivato (passthrough)");
+     }
+
+   // [v4.04] Contatori LOG (attivi solo in fullRecalc)
+   int logBuyCount = 0, logSellCount = 0;
+   int logFlatBars = 0, logFlatGuardBars = 0;
+   int logChandLongExit = 0, logChandShortExit = 0;
+   int logBiasBlockedBuy = 0, logBiasBlockedSell = 0;
 
    //═══════════════════════════════════════════════════════════════════
    //  MAIN LOOP — Per ogni barra da trail_start a rates_total-1
@@ -2231,8 +2338,10 @@ int OnCalculate(const int rates_total,
            {
             isFlat = false;
             B_FlatState[i] = 1.0;   // override → ACTIVE per EA
+            if(fullRecalc) logFlatGuardBars++;
            }
         }
+      if(fullRecalc && isFlat) logFlatBars++;
 
       //─── FLAT ZONE VISUALIZATION — Donchian orizzontale ───────────
       // Disegna un rettangolo azzurro (DRAW_FILLING) + 2 linee DOT
@@ -2364,9 +2473,11 @@ int OnCalculate(const int rates_total,
               }
 
             if(chandLongExit)
-              { B_ChandExit[i] = low[i] - g_atr[i] * 0.3; B_ChandExitClr[i] = 0.0; }
+              { B_ChandExit[i] = low[i] - g_atr[i] * 0.3; B_ChandExitClr[i] = 0.0;
+                if(fullRecalc) logChandLongExit++; }
             else if(chandShortExit)
-              { B_ChandExit[i] = high[i] + g_atr[i] * 0.3; B_ChandExitClr[i] = 1.0; }
+              { B_ChandExit[i] = high[i] + g_atr[i] * 0.3; B_ChandExitClr[i] = 1.0;
+                if(fullRecalc) logChandShortExit++; }
             else
               { B_ChandExit[i] = EMPTY_VALUE; B_ChandExitClr[i] = 0.0; }
            }
@@ -2402,6 +2513,13 @@ int OnCalculate(const int rates_total,
          bool isBuy  = (src1 < t1) && (src > trail) && biasLong  && !isFlat;
          bool isSell = (src1 > t1) && (src < trail) && biasShort && !isFlat;
 
+         // [v4.04] LOG contatori segnali
+         if(fullRecalc)
+           {
+            if(isBuy)  logBuyCount++;
+            if(isSell) logSellCount++;
+           }
+
          //─── (E.2) BIAS GATE (buffer esposto EA) ──────────────────
          // Tagga ogni crossover raw come con/contro bias HTF.
          // L'EA legge B_BiasGate: 1.0=apri, 0.0=solo chiudi, EMPTY=skip.
@@ -2411,6 +2529,13 @@ int OnCalculate(const int rates_total,
          // Crossover RAW (senza bias) per rilevare segnali bloccati.
          bool rawBuy  = (src1 < t1) && (src > trail) && !isFlat;
          bool rawSell = (src1 > t1) && (src < trail) && !isFlat;
+
+         // [v4.04] LOG contatori bias-blocked
+         if(fullRecalc)
+           {
+            if(rawBuy  && !isBuy)  logBiasBlockedBuy++;
+            if(rawSell && !isSell) logBiasBlockedSell++;
+           }
 
          if(rawBuy)
             B_BiasGate[i] = biasLong ? 1.0 : 0.0;
@@ -2619,6 +2744,28 @@ int OnCalculate(const int rates_total,
             B_CClr[i] = (src > trail) ? 0.0 : 1.0;
            }
         }
+     }
+
+   // [v4.04] LOG RIEPILOGO fullRecalc
+   if(fullRecalc)
+     {
+      Print("[UTBot] ── RIEPILOGO FULL RECALC ──");
+      Print("  Barre processate: ", rates_total - trail_start,
+            "  (trail_start=", trail_start, "  rates_total=", rates_total, ")");
+      Print("  SEGNALI:  BUY=", logBuyCount,
+            "  SELL=", logSellCount,
+            "  | Bias-blocked: BUY=", logBiasBlockedBuy,
+            "  SELL=", logBiasBlockedSell);
+      Print("  FLAT:     barre flat=", logFlatBars,
+            "  guard-override=", logFlatGuardBars);
+      if(g_dash_vis_chand)
+         Print("  CHAND EXIT:  long exit X=", logChandLongExit,
+               "  short exit X=", logChandShortExit);
+      Print("  B_State finale (last closed bar): ",
+            DoubleToString(B_State[rates_total - 2], 1),
+            (B_State[rates_total - 2] > 0.5 ? " (LONG)" :
+             B_State[rates_total - 2] < -0.5 ? " (SHORT)" : " (NEUTRO)"));
+      Print("[UTBot] ══════════════════════════════════════════════");
      }
 
    //═══════════════════════════════════════════════════════════════════
