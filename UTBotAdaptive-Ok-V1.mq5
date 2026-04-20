@@ -59,7 +59,15 @@
 //|                                                                  |
 //| CHANGELOG                                                        |
 //|                                                                  |
-//| v4.05 — Bias fix + Chandelier default ON + logging completo      |
+//| v4.05 — Dashboard TF fix + Bias fix + Chand default ON + logging |
+//|   - FIX DASHBOARD TF: al cambio timeframe la dashboard a volte   |
+//|     non appariva. Causa: nessun ChartRedraw() in OnInit +        |
+//|     UpdateUTBDashboard throttled (500ms) nel primo OnCalculate.  |
+//|     Fix: ChartRedraw in OnInit + force update su fullRecalc.     |
+//|   - FIX CHANDELIER STATE: reset g_chandHH/LL/LastLong/LastShort  |
+//|     su ogni fullRecalc (era solo in OnInit). Dashboard toggle    |
+//|     forzava re-scan con stato chandelier stantio.                |
+//|   - FIX dashboard header: versione v4.04 → v4.05.               |
 //|   - FIX CRITICO BIAS: quando toggle BIAS ON da dashboard,        |
 //|     CopyBuffer fallito → htfStateCurrent=0 → biasLong=false →   |
 //|     TUTTI i segnali soppressi. Fix: || !htfAvailable passthrough.|
@@ -1095,6 +1103,7 @@ int OnInit()
      {
       InitUTBDashboard();
       UpdateUTBDashboard(true);
+      ChartRedraw();   // [v4.05 fix] Forza render immediato dopo creazione dashboard
      }
 
    //--- [v4.04] LOGGING COMPLETO OnInit ---
@@ -1517,7 +1526,7 @@ void UpdateUTBDashboard(bool forceUpdate = false)
    int row = 0;
 
    //--- HEADER ---
-   UTBSetRow(row++, "UTBot v4.04 | " + _Symbol + " | " + EnumToString(_Period),
+   UTBSetRow(row++, "UTBot v4.05 | " + _Symbol + " | " + EnumToString(_Period),
              C'70,130,255', 10);
    UTBSetRow(row++, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", C'60,70,100', 7);
 
@@ -1816,6 +1825,10 @@ void UpdateUTBDashboard(bool forceUpdate = false)
      }
 
    UTBResizeBG(row);
+
+   // [v4.05 fix] Forza visibilità BORDER/BG — difensivo contro MT5 glitch
+   ObjectSetInteger(0, UTB_DASH_PREFIX + "BORDER", OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+   ObjectSetInteger(0, UTB_DASH_PREFIX + "BG",     OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
   }
 
 //+------------------------------------------------------------------+
@@ -1995,6 +2008,11 @@ int OnCalculate(const int rates_total,
       g_wasFlatPrev   = false;
       g_flatRangeHigh = 0;
       g_flatRangeLow  = 0;
+      // [v4.05 fix] Reset Chandelier state su fullRecalc (dashboard toggle o TF change)
+      g_chandHH         = 0;
+      g_chandLL         = 999999;
+      g_chandLastLong   = 0;
+      g_chandLastShort  = 999999;
       // [v4.04] LOG fullRecalc
       Print("[UTBot] ══ FULL RECALC ══ rates=", rates_total,
             "  prev=", prev_calculated,
@@ -2801,10 +2819,14 @@ int OnCalculate(const int rates_total,
         }
      }
 
-   //--- Dashboard update (throttled 500ms)
+   //--- Dashboard update (throttled 500ms, forzato su fullRecalc)
    g_dash_ratesTotal = rates_total;
    if(InpShowDashboard)
-      UpdateUTBDashboard();
+     {
+      UpdateUTBDashboard(fullRecalc);  // [v4.05 fix] force=true su fullRecalc → no throttle dopo TF change
+      if(fullRecalc)
+         ChartRedraw();  // [v4.05 fix] Forza render dopo fullRecalc (toggle dashboard + cambio TF)
+     }
 
    return rates_total;
   }
