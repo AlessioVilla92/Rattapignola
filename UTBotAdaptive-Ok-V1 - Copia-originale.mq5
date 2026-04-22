@@ -206,21 +206,28 @@
 #property indicator_style1  STYLE_SOLID
 #property indicator_width1  2
 
-// --- Plot 1: Freccia BUY — monocromatica verde pieno (v2.10) ---
-// v2.10: gradazione ER rimossa. Ogni segnale ha lo stesso peso visivo.
-// Rationale: segnali con ER basso precedono spesso trend forti — colorarli
-// in giallo/grigio creava bias di selezione controproducente.
-// I 4 slot colore sono identici per preservare DRAW_COLOR_ARROW;
-// il buffer B_BuyClr resta (buffer 3) per retrocompatibilità iCustom.
+// --- Plot 1: Freccia BUY — DRAW_COLOR_ARROW, 4 livelli ER ---
+// 4 slot colore (selezione dinamica via B_BuyClr nel loop OnCalculate):
+//   Indice 0: verde pieno C'76,175,80'    ER>=0.60 — segnale affidabile
+//   Indice 1: verde chiar C'139,195,74'   ER 0.35-0.59 — moderato
+//   Indice 2: giallo      C'255,193,7'    ER 0.15-0.34 — debole
+//   Indice 3: grigio      C'120,120,120'  ER<0.15 — ranging, massima cautela
+// [v2.10 fix] InpMonochromeArrows=true forza B_BuyClr=0 → tutte verde pieno
+// (gli indici 1/2/3 restano definiti ma inutilizzati nel rendering).
 #property indicator_label2  "Buy"
 #property indicator_type2   DRAW_COLOR_ARROW
-#property indicator_color2  C'76,175,80', C'76,175,80', C'76,175,80', C'76,175,80'
+#property indicator_color2  C'76,175,80', C'139,195,74', C'255,193,7', C'120,120,120'
 #property indicator_width2  2
 
-// --- Plot 2: Freccia SELL — monocromatica rosso pieno (v2.10) ---
+// --- Plot 2: Freccia SELL — DRAW_COLOR_ARROW, 4 livelli ER ---
+//   Indice 0: rosso pieno  C'239,83,80'    ER>=0.60
+//   Indice 1: arancione    C'255,138,101'  ER 0.35-0.59
+//   Indice 2: giallo       C'255,193,7'    ER 0.15-0.34
+//   Indice 3: grigio       C'120,120,120'  ER<0.15
+// [v2.10 fix] InpMonochromeArrows=true forza B_SellClr=0 → tutte rosso pieno.
 #property indicator_label3  "Sell"
 #property indicator_type3   DRAW_COLOR_ARROW
-#property indicator_color3  C'239,83,80', C'239,83,80', C'239,83,80', C'239,83,80'
+#property indicator_color3  C'239,83,80', C'255,138,101', C'255,193,7', C'120,120,120'
 #property indicator_width3  2
 
 // --- Plot 3: Entry Level Line — linea orizzontale viola al livello di entrata ---
@@ -352,6 +359,8 @@ input group "╚═════════════════════�
 
 input bool            InpColorBars   = true;     // Colora le candele
 input bool            InpShowArrows  = true;     // Mostra frecce BUY/SELL
+input bool            InpMonochromeArrows = false;  // [v2.10] Frecce monocromatiche (OFF = gradazione ER)
+input bool            InpERKaufmanUniform = false;  // [v2.10] ER Kaufman uniforme (OFF = proxy delta/ATR per non-KAMA)
 
 input group "                                                               "
 input group "╔═══════════════════════════════════════════════════════════╗"
@@ -1628,23 +1637,44 @@ int OnCalculate(const int rates_total,
       B_Trail[i]    = trail;
       B_TrailClr[i] = (src > trail) ? 0.0 : 1.0;
 
-      //--- Efficiency Ratio Kaufman windowed (v2.10) ---
-      // ER autentico su close[] per TUTTE le sorgenti (non più proxy).
-      // ER = |close[i] - close[i-N]| / Σ|close[k] - close[k-1]| su N=g_eff_kamaN
-      // Range 0..1: 1 = perfettamente direzionale, 0 = totalmente choppy.
-      // Misura l'efficienza del PREZZO (close), indipendente da g_eff_srcType.
-      // Buffer 12 esposto all'EA host ora è coerente tra tutte le sorgenti.
+      //--- Efficiency Ratio — modalità selezionabile (v2.10) ---
+      // InpERKaufmanUniform=true  → Kaufman autentico su close[] per tutte le sorgenti
+      //                              (ER coerente cross-sorgente, scala 0..1 rigorosa)
+      // InpERKaufmanUniform=false → comportamento v2.01:
+      //                              - SRC_KAMA: Kaufman autentico
+      //                              - altre sorgenti: proxy min(1, |Δsrc|/ATR)
       double er_val = 0.0;
-      int erWin = g_eff_kamaN;
-      if(i >= erWin)
+      if(InpERKaufmanUniform)
         {
-         double d = MathAbs(close[i] - close[i - erWin]);
-         double n = 0.0;
-         for(int k = 1; k <= erWin; k++)
-            n += MathAbs(close[i - k + 1] - close[i - k]);
-         er_val = (n > 0.0) ? d / n : 0.0;
+         int erWin = g_eff_kamaN;
+         if(i >= erWin)
+           {
+            double d = MathAbs(close[i] - close[i - erWin]);
+            double n = 0.0;
+            for(int k = 1; k <= erWin; k++)
+               n += MathAbs(close[i - k + 1] - close[i - k]);
+            er_val = (n > 0.0) ? d / n : 0.0;
+           }
+        }
+      else
+        {
+         // v2.01 behavior: Kaufman solo per SRC_KAMA, proxy per le altre
+         if(g_eff_srcType == SRC_KAMA && i >= g_eff_kamaN)
+           {
+            double d = MathAbs(close[i] - close[i - g_eff_kamaN]);
+            double n = 0.0;
+            for(int k = 1; k <= g_eff_kamaN; k++)
+               n += MathAbs(close[i - k + 1] - close[i - k]);
+            er_val = (n > 0.0) ? d / n : 0.0;
+           }
+         else if(g_atr[i] > 0.0)
+            er_val = MathMin(1.0, MathAbs(src - src1) / g_atr[i]);
         }
       B_ER[i] = er_val;
+
+      // Color index ER (4 livelli): usato quando InpMonochromeArrows=false.
+      // Soglie: 0.60 (forte) / 0.35 (moderato) / 0.15 (debole) — resto = ranging.
+      int erIdx = (er_val >= 0.60) ? 0 : (er_val >= 0.35) ? 1 : (er_val >= 0.15) ? 2 : 3;
 
       //--- ANTI-REPAINTING ---
       // Barre chiuse (i < rates_total-1): tutto confermato e permanente.
@@ -1655,12 +1685,14 @@ int OnCalculate(const int rates_total,
          bool isBuy  = (src1 < t1) && (src > trail) && biasLong;
          bool isSell = (src1 > t1) && (src < trail) && biasShort;
 
-         //--- Frecce monocromatiche (v2.10) ---
-         // BuyClr/SellClr forzati sempre a 0 (unico colore per direzione).
+         //--- Frecce: mono o ER-colorate (v2.10) ---
+         // InpMonochromeArrows=true  → un colore per direzione (verde/rosso pieno)
+         // InpMonochromeArrows=false → 4 gradazioni ER (comportamento v2.01)
+         double clrIdx = InpMonochromeArrows ? 0.0 : (double)erIdx;
          B_Buy[i]     = isBuy  ? (low[i]  - g_atr[i] * 0.5) : EMPTY_VALUE;
-         B_BuyClr[i]  = 0.0;
+         B_BuyClr[i]  = clrIdx;
          B_Sell[i]    = isSell ? (high[i] + g_atr[i] * 0.5) : EMPTY_VALUE;
-         B_SellClr[i] = 0.0;
+         B_SellClr[i] = clrIdx;
 
          //--- Entry level line: carry-forward fino al prossimo segnale ---
          if(isBuy || isSell)
