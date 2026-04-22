@@ -166,14 +166,23 @@
 //|   - Anti-repainting (segnali su bar chiuse i<rates_total-1)      |
 //|   - Compat Rattapignola via iCustom (buf 0/2/4/12/13)            |
 //|                                                                  |
-//| ── ROLLBACK A COMPORTAMENTO v2.01 ─────────────────────────── |
-//|   Per ottenere il comportamento esatto della v2.01, impostare:   |
-//|     - InpAutoSrcByTF = false                                     |
-//|     - InpSrcType     = SRC_JMA                                   |
-//|     - InpKamaPreset  = KAMA_PRESET_MANUAL                        |
-//|   Note: la frecce restano monocromatiche e l'ER resta Kaufman    |
-//|   uniforme (modifiche A e B non hanno toggle di rollback —       |
-//|   sono cosmetica e correzione di scala).                         |
+//| ── DEFAULT RETROCOMPATIBILI v2.01 (v2.10 fix) ─────────────── |
+//|   I default delle 3 nuove opzioni sono volutamente OFF, così    |
+//|   l'indicatore caricato senza modifiche ha comportamento        |
+//|   IDENTICO a v2.01 sui segnali:                                  |
+//|     - InpSrcType     = SRC_JMA            (default v2.01)       |
+//|     - InpAutoSrcByTF = false              (opt-in)              |
+//|     - InpKamaPreset  = KAMA_PRESET_MANUAL (opt-in)              |
+//|   Per attivare le features v2.10 (KAMA Auto + Preset Middle):   |
+//|     - InpAutoSrcByTF = true                                     |
+//|     - InpKamaPreset  = KAMA_PRESET_AUTO                         |
+//|   ATTENZIONE: KAMA Middle (14,4,50) su M15 può bloccare segnali |
+//|   su trend forti (SC max=0.16 vs 0.44 di Standard). Testare     |
+//|   sempre prima di lasciarla in produzione.                      |
+//|   Note: le frecce restano monocromatiche e l'ER resta Kaufman   |
+//|   uniforme (modifiche A e B non hanno toggle di rollback —      |
+//|   sono cosmetica e correzione di scala). Per rollback totale    |
+//|   anche di A e B: git revert del commit v2.10.                  |
 //|                                                                  |
 //+------------------------------------------------------------------+
 #property copyright "Alessio / AcquaDulza ecosystem"
@@ -311,12 +320,12 @@ input group "╔═════════════════════�
 input group "║  ⚡ SORGENTE ADATTIVA                                    ║"
 input group "╚═══════════════════════════════════════════════════════════╝"
 
-input ENUM_SRC_TYPE   InpSrcType     = SRC_KAMA;  // ⚙ Tipo sorgente (v2.10: KAMA default)
-input bool            InpAutoSrcByTF = true;      // [v2.10] Auto SrcType per TF (M5/M15→KAMA)
+input ENUM_SRC_TYPE   InpSrcType     = SRC_JMA;   // ⚙ Tipo sorgente (v2.10 fix: rollback a JMA per retrocompat v2.01)
+input bool            InpAutoSrcByTF = false;     // [v2.10 fix] OFF di default — opt-in per attivare KAMA M5/M15
 input int             InpHMAPeriod   = 14;       // HMA Period (solo se SRC_HMA)
 
 input group "    📐 KAMA (Kaufman Adaptive)"
-input ENUM_KAMA_PRESET InpKamaPreset  = KAMA_PRESET_AUTO;  // [v2.10] Preset KAMA (AUTO = M15→MIDDLE)
+input ENUM_KAMA_PRESET InpKamaPreset  = KAMA_PRESET_MANUAL;  // [v2.10 fix] OFF (MANUAL) di default — attiva AUTO/STANDARD/MIDDLE/SLOW solo se serve
 input int             InpKAMA_N      = 10;       // KAMA ER Period (solo se InpKamaPreset=MANUAL)
 input int             InpKAMA_Fast   = 2;        // KAMA Fast EMA (solo se InpKamaPreset=MANUAL)
 input int             InpKAMA_Slow   = 30;       // KAMA Slow EMA (solo se InpKamaPreset=MANUAL)
