@@ -191,8 +191,9 @@
 //|                                                                  |
 //+------------------------------------------------------------------+
 #property copyright "Alessio / AcquaDulza ecosystem"
-#property version   "2.11"
+#property version   "2.12"
 #property description "UT Bot Alerts — KAMA/HMA/JMA + anti-repainting + frecce monocromatiche"
+#property description "v2.12: frecce sempre direzionali (BUY verde/verde chiaro, SELL rosso/rosso chiaro — no giallo/grigio)"
 #property description "v2.11: rimosso filtro Bias HTF (semplificazione, zero ricorsione iCustom)"
 #property description "v2.10: KAMA preset multipli (Standard/Middle/Slow) + ER Kaufman uniforme + Auto-SrcType per TF"
 #property description "BUY/SELL su barre chiuse. Frecce verde/rosso pieno. Default M15: KAMA Middle (filtro anti-microstorno)."
@@ -212,28 +213,30 @@
 #property indicator_style1  STYLE_SOLID
 #property indicator_width1  2
 
-// --- Plot 1: Freccia BUY — DRAW_COLOR_ARROW, 4 livelli ER ---
-// 4 slot colore (selezione dinamica via B_BuyClr nel loop OnCalculate):
-//   Indice 0: verde pieno C'76,175,80'    ER>=0.60 — segnale affidabile
-//   Indice 1: verde chiar C'139,195,74'   ER 0.35-0.59 — moderato
-//   Indice 2: giallo      C'255,193,7'    ER 0.15-0.34 — debole
-//   Indice 3: grigio      C'120,120,120'  ER<0.15 — ranging, massima cautela
-// [v2.10 fix] InpMonochromeArrows=true forza B_BuyClr=0 → tutte verde pieno
-// (gli indici 1/2/3 restano definiti ma inutilizzati nel rendering).
+// --- Plot 1: Freccia BUY — DRAW_COLOR_ARROW, 2 livelli direzionali ---
+// 4 slot colore (per compatibilità con erIdx 0..3), ma solo 2 tonalità:
+//   Indice 0: verde pieno  C'76,175,80'   ER>=0.60 — trend forte
+//   Indice 1: verde chiaro C'139,195,74'  ER 0.35-0.59 — moderato
+//   Indice 2: verde chiaro C'139,195,74'  ER 0.15-0.34 — debole (era giallo)
+//   Indice 3: verde chiaro C'139,195,74'  ER<0.15 — ranging (era grigio)
+// [v2.12] Rimossi giallo e grigio: frecce sempre verdi (forte vs chiaro).
+// [v2.10] InpMonochromeArrows=true forza B_BuyClr=0 → tutte verde pieno.
 #property indicator_label2  "Buy"
 #property indicator_type2   DRAW_COLOR_ARROW
-#property indicator_color2  C'76,175,80', C'139,195,74', C'255,193,7', C'120,120,120'
+#property indicator_color2  C'76,175,80', C'139,195,74', C'139,195,74', C'139,195,74'
 #property indicator_width2  2
 
-// --- Plot 2: Freccia SELL — DRAW_COLOR_ARROW, 4 livelli ER ---
-//   Indice 0: rosso pieno  C'239,83,80'    ER>=0.60
-//   Indice 1: arancione    C'255,138,101'  ER 0.35-0.59
-//   Indice 2: giallo       C'255,193,7'    ER 0.15-0.34
-//   Indice 3: grigio       C'120,120,120'  ER<0.15
-// [v2.10 fix] InpMonochromeArrows=true forza B_SellClr=0 → tutte rosso pieno.
+// --- Plot 2: Freccia SELL — DRAW_COLOR_ARROW, 2 livelli direzionali ---
+// 4 slot colore (per compatibilità con erIdx 0..3), ma solo 2 tonalità:
+//   Indice 0: rosso pieno  C'239,83,80'   ER>=0.60 — trend forte
+//   Indice 1: rosso chiaro C'255,138,101' ER 0.35-0.59 — moderato
+//   Indice 2: rosso chiaro C'255,138,101' ER 0.15-0.34 — debole (era giallo)
+//   Indice 3: rosso chiaro C'255,138,101' ER<0.15 — ranging (era grigio)
+// [v2.12] Rimossi giallo e grigio: frecce sempre rosse (forte vs chiaro).
+// [v2.10] InpMonochromeArrows=true forza B_SellClr=0 → tutte rosso pieno.
 #property indicator_label3  "Sell"
 #property indicator_type3   DRAW_COLOR_ARROW
-#property indicator_color3  C'239,83,80', C'255,138,101', C'255,193,7', C'120,120,120'
+#property indicator_color3  C'239,83,80', C'255,138,101', C'255,138,101', C'255,138,101'
 #property indicator_width3  2
 
 // --- Plot 3: Entry Level Line — linea orizzontale viola al livello di entrata ---
@@ -844,7 +847,7 @@ int OnInit()
 
    // Log completo dei parametri effettivi nel tab Experts.
    // Utile per verificare quale preset è attivo e i valori KAMA applicati.
-   Print("[UTBot v2.11] TFPreset=", EnumToString(InpTFPreset),
+   Print("[UTBot v2.12] TFPreset=", EnumToString(InpTFPreset),
          " | KAMAPreset=", EnumToString(InpKamaPreset),
          " | Key=", DoubleToString(g_eff_keyValue, 1),
          " | ATR=", g_eff_atrPeriod,
@@ -1227,7 +1230,7 @@ void UpdateUTBDashboard(bool forceUpdate = false)
    int row = 0;
 
    //--- HEADER ---
-   UTBSetRow(row++, "UTBot v2.11 | " + _Symbol + " | " + EnumToString(_Period),
+   UTBSetRow(row++, "UTBot v2.12 | " + _Symbol + " | " + EnumToString(_Period),
              C'70,130,255', 10);
    UTBSetRow(row++, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", C'60,70,100', 7);
 
