@@ -191,8 +191,9 @@
 //|                                                                  |
 //+------------------------------------------------------------------+
 #property copyright "Alessio / AcquaDulza ecosystem"
-#property version   "2.12"
+#property version   "2.13"
 #property description "UT Bot Alerts — KAMA/HMA/JMA + anti-repainting + frecce monocromatiche"
+#property description "v2.13: dashboard moderna (header bar + 3 card + status badge + ER bar grafica)"
 #property description "v2.12: frecce sempre direzionali (BUY verde/verde chiaro, SELL rosso/rosso chiaro — no giallo/grigio)"
 #property description "v2.11: rimosso filtro Bias HTF (semplificazione, zero ricorsione iCustom)"
 #property description "v2.10: KAMA preset multipli (Standard/Middle/Slow) + ER Kaufman uniforme + Auto-SrcType per TF"
@@ -481,14 +482,49 @@ int    g_origShowVolumes = 0;
 bool   g_origForeground  = true;
 bool   g_themeApplied    = false;
 
-//--- Dashboard (v2.00) ---
+//--- Dashboard (v2.13 — modernizzata) ---
 bool   g_dash_vis_trail   = true;   // Trail Stop line
 bool   g_dash_vis_arrows  = true;   // Frecce BUY/SELL
 bool   g_dash_vis_entry   = true;   // Entry marker viola
 bool   g_dash_vis_candles = true;   // Candele colorate
 string UTB_DASH_PREFIX = "UTB_DASH_";
-#define UTB_DASH_MAX_ROWS 20
 int    g_dash_ratesTotal  = 0;      // rates_total dall'ultimo OnCalculate
+
+//--- Layout (px) ---
+#define DASH_X            12
+#define DASH_Y            22
+#define DASH_W            340
+#define DASH_HEADER_H     34
+#define DASH_CARD_W       320
+#define DASH_CARD_PAD_X   10
+#define DASH_ROW_H        20
+#define DASH_BTN_W        38
+#define DASH_BTN_H        16
+
+//--- Palette (dark navy + teal accent) ---
+#define CLR_BORDER        C'38,166,154'      // teal accent (border outer)
+#define CLR_BG            C'15,21,38'        // navy molto scuro
+#define CLR_HDR_BG        C'38,166,154'      // teal (header bar)
+#define CLR_HDR_TXT       C'255,255,255'     // bianco header
+#define CLR_HDR_DIM       C'190,235,225'     // bianco-teal dim (sub header)
+#define CLR_CARD_BG       C'24,32,55'        // grigio-blu scuro card
+#define CLR_CARD_BORDER   C'45,58,90'        // bordo card
+#define CLR_SECTION       C'100,200,210'     // teal chiaro section label
+#define CLR_TXT_PRIMARY   C'225,230,240'     // off-white dato principale
+#define CLR_TXT_SECOND    C'150,165,190'     // medium gray testo standard
+#define CLR_TXT_DIM       C'95,110,140'      // dim gray
+#define CLR_STATE_LONG    C'38,166,154'      // teal stato LONG
+#define CLR_STATE_SHORT   C'239,83,80'       // coral stato SHORT
+#define CLR_STATE_NEUT    C'95,110,140'      // dim gray NEUTRO
+#define CLR_ER_TRACK      C'40,52,80'        // track barra ER (vuoto)
+#define CLR_ER_STRONG     C'76,175,80'       // verde ER>=0.60
+#define CLR_ER_MEDIUM     C'255,180,50'      // ambra ER 0.35-0.59
+#define CLR_ER_WEAK       C'255,235,59'      // giallo ER 0.15-0.34
+#define CLR_ER_RANGE      C'120,135,160'     // grigio ER<0.15
+#define CLR_BTN_ON_BG     C'38,166,154'      // teal bottone ON
+#define CLR_BTN_ON_TXT    C'255,255,255'     // bianco testo ON
+#define CLR_BTN_OFF_BG    C'45,55,80'        // grigio bottone OFF
+#define CLR_BTN_OFF_TXT   C'150,165,190'     // testo dim OFF
 
 //+------------------------------------------------------------------+
 //| UTBotPresetsInit — Applica preset TF ai parametri effettivi      |
@@ -847,7 +883,7 @@ int OnInit()
 
    // Log completo dei parametri effettivi nel tab Experts.
    // Utile per verificare quale preset è attivo e i valori KAMA applicati.
-   Print("[UTBot v2.12] TFPreset=", EnumToString(InpTFPreset),
+   Print("[UTBot v2.13] TFPreset=", EnumToString(InpTFPreset),
          " | KAMAPreset=", EnumToString(InpKamaPreset),
          " | Key=", DoubleToString(g_eff_keyValue, 1),
          " | ATR=", g_eff_atrPeriod,
@@ -1099,120 +1135,202 @@ void ApplyJMA(const double &price[], int total, int startIdx)
   }
 
 //+------------------------------------------------------------------+
-//| Dashboard — Helper: setta una riga di testo                      |
+//| Dashboard helpers (v2.13)                                        |
 //+------------------------------------------------------------------+
-void UTBSetRow(int row, string text, color clr, int fontSize = 8)
+
+// Crea un OBJ_RECTANGLE_LABEL con bordo flat
+void UTBCreateRect(string id, int x, int y, int w, int h,
+                   color bgClr, color brdClr = clrNONE, int zorder = 16000)
   {
-   if(row >= UTB_DASH_MAX_ROWS)
-      return;
-   string name = UTB_DASH_PREFIX + "R" + IntegerToString(row, 2, '0');
+   string name = UTB_DASH_PREFIX + id;
+   ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bgClr);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR,
+                    (brdClr == clrNONE) ? bgClr : brdClr);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, zorder);
+  }
+
+// Crea un OBJ_LABEL con font/size custom
+void UTBCreateLabel(string id, int x, int y, color clr,
+                    string font = "Segoe UI", int size = 8, int zorder = 16100)
+  {
+   string name = UTB_DASH_PREFIX + id;
+   ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, zorder);
+   ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+  }
+
+// Setta testo + colore (label esistente)
+void UTBSetLabel(string id, string text, color clr)
+  {
+   string name = UTB_DASH_PREFIX + id;
    ObjectSetString(0, name, OBJPROP_TEXT, text);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
-   ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
   }
 
-//+------------------------------------------------------------------+
-//| Dashboard — Helper: setta un bottone toggle ON/OFF               |
-//+------------------------------------------------------------------+
-void UTBSetBtn(string id, bool is_on, int y)
+// Setta solo testo (mantiene colore)
+void UTBSetLabelText(string id, string text)
+  {
+   ObjectSetString(0, UTB_DASH_PREFIX + id, OBJPROP_TEXT, text);
+  }
+
+// Setta solo background (rettangolo esistente)
+void UTBSetRectBG(string id, color bgClr)
+  {
+   ObjectSetInteger(0, UTB_DASH_PREFIX + id, OBJPROP_BGCOLOR, bgClr);
+   ObjectSetInteger(0, UTB_DASH_PREFIX + id, OBJPROP_BORDER_COLOR, bgClr);
+  }
+
+// Setta width (per ER bar fill proporzionale)
+void UTBSetRectW(string id, int w)
+  {
+   ObjectSetInteger(0, UTB_DASH_PREFIX + id, OBJPROP_XSIZE, MathMax(1, w));
+  }
+
+// Bottone toggle moderno (palette teal/dark)
+void UTBSetBtn(string id, bool is_on)
   {
    string name = UTB_DASH_PREFIX + "BTN_" + id;
-   int btn_x = 10 + 280;
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, btn_x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
    ObjectSetString(0, name, OBJPROP_TEXT, is_on ? "ON" : "OFF");
-   ObjectSetInteger(0, name, OBJPROP_COLOR,        is_on ? C'220,255,220' : C'180,120,120');
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR,      is_on ? C'25,80,40'   : C'70,25,25');
-   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, is_on ? C'40,120,60'  : C'100,40,40');
+   ObjectSetInteger(0, name, OBJPROP_COLOR,        is_on ? CLR_BTN_ON_TXT  : CLR_BTN_OFF_TXT);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR,      is_on ? CLR_BTN_ON_BG   : CLR_BTN_OFF_BG);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, is_on ? CLR_BTN_ON_BG   : CLR_BTN_OFF_BG);
    ObjectSetInteger(0, name, OBJPROP_STATE, false);
-   ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
   }
 
 //+------------------------------------------------------------------+
-//| Dashboard — Ridimensiona background                              |
+//| InitUTBDashboard — Crea oggetti (v2.13 modern layout)            |
 //+------------------------------------------------------------------+
-void UTBResizeBG(int totalRows)
-  {
-   int y_step = 16;
-   int panel_h = 28 + totalRows * y_step + 8;
-   string border = UTB_DASH_PREFIX + "BORDER";
-   string bg     = UTB_DASH_PREFIX + "BG";
-   ObjectSetInteger(0, border, OBJPROP_YSIZE, panel_h);
-   ObjectSetInteger(0, bg,     OBJPROP_YSIZE, panel_h - 6);
-  }
-
-//+------------------------------------------------------------------+
-//| InitUTBDashboard — Crea tutti gli oggetti dashboard              |
+// Layout (px):
+//   y=22..56   header bar (teal bg, white text)
+//   y=66..82   sezione 1 label "▸ STATO POSIZIONE"
+//   y=86..168  card 1 (badge stato + trail + ER bar)
+//   y=180..196 sezione 2 label "▸ CONFIGURAZIONE"
+//   y=200..278 card 2 (sorgente / preset / key+ATR)
+//   y=290..306 sezione 3 label "▸ COMPONENTI VISIBILI"
+//   y=310..408 card 3 (4 toggle row + button)
 //+------------------------------------------------------------------+
 void InitUTBDashboard()
   {
    UTB_DASH_PREFIX = "UTB_DASH_";
 
-   int x_base = 10, y_base = 20;
-   int panel_w = 320;
+   //--- Outer border (teal accent, 2px effect)
+   UTBCreateRect("BORDER", DASH_X - 2, DASH_Y - 2, DASH_W + 4, 414,
+                 CLR_BORDER, CLR_BORDER, 16000);
 
-   //--- Border (gold)
-   string border = UTB_DASH_PREFIX + "BORDER";
-   ObjectCreate(0, border, OBJ_RECTANGLE_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, border, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, border, OBJPROP_XDISTANCE, x_base);
-   ObjectSetInteger(0, border, OBJPROP_YDISTANCE, y_base);
-   ObjectSetInteger(0, border, OBJPROP_XSIZE, panel_w);
-   ObjectSetInteger(0, border, OBJPROP_YSIZE, 400);
-   ObjectSetInteger(0, border, OBJPROP_BGCOLOR, C'200,180,50');
-   ObjectSetInteger(0, border, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-   ObjectSetInteger(0, border, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, border, OBJPROP_HIDDEN, true);
-   ObjectSetInteger(0, border, OBJPROP_ZORDER, 16000);
+   //--- Background (dark navy)
+   UTBCreateRect("BG", DASH_X, DASH_Y, DASH_W, 410,
+                 CLR_BG, CLR_BG, 16001);
 
-   //--- Background (dark blue)
-   string bg = UTB_DASH_PREFIX + "BG";
-   ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, x_base + 3);
-   ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, y_base + 3);
-   ObjectSetInteger(0, bg, OBJPROP_XSIZE, panel_w - 6);
-   ObjectSetInteger(0, bg, OBJPROP_YSIZE, 394);
-   ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'12,20,45');
-   ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-   ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, bg, OBJPROP_HIDDEN, true);
-   ObjectSetInteger(0, bg, OBJPROP_ZORDER, 16001);
+   //--- Header bar (teal accent)
+   UTBCreateRect("HDRBG", DASH_X, DASH_Y, DASH_W, DASH_HEADER_H,
+                 CLR_HDR_BG, CLR_HDR_BG, 16002);
 
-   //--- Label pool (20 righe)
-   for(int i = 0; i < UTB_DASH_MAX_ROWS; i++)
-     {
-      string name = UTB_DASH_PREFIX + "R" + IntegerToString(i, 2, '0');
-      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x_base + 10);
-      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y_base + 6 + i * 16);
-      ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
-      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
-      ObjectSetInteger(0, name, OBJPROP_COLOR, C'150,165,185');
-      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-      ObjectSetInteger(0, name, OBJPROP_ZORDER, 16100);
-      ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_NO_PERIODS);
-     }
+   //--- Header title (font Segoe UI bold 11)
+   UTBCreateLabel("HDR", DASH_X + 12, DASH_Y + 9, CLR_HDR_TXT,
+                  "Segoe UI", 11, 16200);
 
-   //--- Button pool (4 toggle: TRAIL, ARROWS, ENTRY, CANDLES)
+   //--- SEZIONE 1: STATO POSIZIONE
+   int y_s1 = DASH_Y + DASH_HEADER_H + 12;        // 68
+   int y_c1 = y_s1 + 18;                           // 86
+   UTBCreateLabel("S1", DASH_X + 10, y_s1, CLR_SECTION, "Segoe UI", 8, 16100);
+   UTBCreateRect ("CARD1", DASH_X + 8, y_c1, DASH_CARD_W, 80,
+                  CLR_CARD_BG, CLR_CARD_BORDER, 16050);
+
+   // State badge (BG + text). Width sufficiente per "SHORT ▼"
+   UTBCreateRect ("BADGE", DASH_X + 18, y_c1 + 10, 90, 22,
+                  CLR_STATE_NEUT, CLR_STATE_NEUT, 16080);
+   UTBCreateLabel("BADGETXT", DASH_X + 28, y_c1 + 14, CLR_HDR_TXT,
+                  "Segoe UI", 9, 16200);
+
+   // Trail row (label + value)
+   UTBCreateLabel("TRAILLBL", DASH_X + 120, y_c1 + 12, CLR_TXT_DIM,   "Segoe UI", 8, 16200);
+   UTBCreateLabel("TRAILVAL", DASH_X + 120, y_c1 + 26, CLR_TXT_PRIMARY, "Consolas", 9, 16200);
+
+   // ER row: label + value + bar (track + fill) + quality
+   UTBCreateLabel("ERLBL",  DASH_X + 18,  y_c1 + 50, CLR_TXT_DIM,   "Segoe UI", 8, 16200);
+   UTBCreateLabel("ERVAL",  DASH_X + 50,  y_c1 + 50, CLR_TXT_PRIMARY, "Consolas", 9, 16200);
+   UTBCreateRect ("ERTRACK", DASH_X + 100, y_c1 + 56, 110, 8,
+                  CLR_ER_TRACK, CLR_ER_TRACK, 16060);
+   UTBCreateRect ("ERFILL",  DASH_X + 100, y_c1 + 56, 1, 8,
+                  CLR_ER_RANGE, CLR_ER_RANGE, 16070);
+   UTBCreateLabel("ERQUAL", DASH_X + 220, y_c1 + 50, CLR_TXT_SECOND, "Segoe UI", 8, 16200);
+
+   //--- SEZIONE 2: CONFIGURAZIONE
+   int y_s2 = y_c1 + 80 + 14;                      // 180
+   int y_c2 = y_s2 + 18;                           // 198
+   UTBCreateLabel("S2", DASH_X + 10, y_s2, CLR_SECTION, "Segoe UI", 8, 16100);
+   UTBCreateRect ("CARD2", DASH_X + 8, y_c2, DASH_CARD_W, 78,
+                  CLR_CARD_BG, CLR_CARD_BORDER, 16050);
+
+   UTBCreateLabel("CFG_SRC_LBL", DASH_X + 18,  y_c2 + 10, CLR_TXT_DIM,     "Segoe UI", 8, 16200);
+   UTBCreateLabel("CFG_SRC_VAL", DASH_X + 90,  y_c2 + 10, CLR_TXT_PRIMARY, "Consolas", 9, 16200);
+   UTBCreateLabel("CFG_PRE_LBL", DASH_X + 18,  y_c2 + 30, CLR_TXT_DIM,     "Segoe UI", 8, 16200);
+   UTBCreateLabel("CFG_PRE_VAL", DASH_X + 90,  y_c2 + 30, CLR_TXT_PRIMARY, "Consolas", 9, 16200);
+   UTBCreateLabel("CFG_KEY_LBL", DASH_X + 18,  y_c2 + 50, CLR_TXT_DIM,     "Segoe UI", 8, 16200);
+   UTBCreateLabel("CFG_KEY_VAL", DASH_X + 90,  y_c2 + 50, CLR_TXT_PRIMARY, "Consolas", 9, 16200);
+
+   //--- SEZIONE 3: COMPONENTI VISIBILI
+   int y_s3 = y_c2 + 78 + 14;                      // 290
+   int y_c3 = y_s3 + 18;                           // 308
+   UTBCreateLabel("S3", DASH_X + 10, y_s3, CLR_SECTION, "Segoe UI", 8, 16100);
+   UTBCreateRect ("CARD3", DASH_X + 8, y_c3, DASH_CARD_W, 96,
+                  CLR_CARD_BG, CLR_CARD_BORDER, 16050);
+
    string btnIds[4] = {"TRAIL", "ARROWS", "ENTRY", "CANDLES"};
+   string btnLbls[4] = {"Trail Stop Line", "Frecce BUY/SELL", "Entry Level", "Candele Trigger"};
+   int btnX = DASH_X + DASH_CARD_W - DASH_BTN_W - 12;
+
    for(int i = 0; i < 4; i++)
      {
-      string name = UTB_DASH_PREFIX + "BTN_" + btnIds[i];
-      ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
-      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-      ObjectSetInteger(0, name, OBJPROP_ZORDER, 17000);
-      ObjectSetInteger(0, name, OBJPROP_XSIZE, 36);
-      ObjectSetInteger(0, name, OBJPROP_YSIZE, 15);
-      ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
-      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 7);
-      ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_NO_PERIODS);
+      int row_y = y_c3 + 10 + i * DASH_ROW_H;
+
+      // Etichetta riga
+      UTBCreateLabel("VIS_" + btnIds[i], DASH_X + 18, row_y + 1,
+                     CLR_TXT_PRIMARY, "Segoe UI", 8, 16200);
+      UTBSetLabelText("VIS_" + btnIds[i], btnLbls[i]);
+
+      // Bottone toggle
+      string bn = UTB_DASH_PREFIX + "BTN_" + btnIds[i];
+      ObjectCreate(0, bn, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, bn, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, bn, OBJPROP_XDISTANCE, btnX);
+      ObjectSetInteger(0, bn, OBJPROP_YDISTANCE, row_y - 2);
+      ObjectSetInteger(0, bn, OBJPROP_XSIZE, DASH_BTN_W);
+      ObjectSetInteger(0, bn, OBJPROP_YSIZE, DASH_BTN_H);
+      ObjectSetString (0, bn, OBJPROP_FONT, "Segoe UI");
+      ObjectSetInteger(0, bn, OBJPROP_FONTSIZE, 7);
+      ObjectSetInteger(0, bn, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, bn, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, bn, OBJPROP_ZORDER, 17000);
+      ObjectSetInteger(0, bn, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
      }
+
+   //--- Section labels iniziali (testo)
+   UTBSetLabelText("S1", "▸ STATO POSIZIONE");
+   UTBSetLabelText("S2", "▸ CONFIGURAZIONE");
+   UTBSetLabelText("S3", "▸ COMPONENTI VISIBILI");
+   UTBSetLabelText("TRAILLBL", "TRAIL STOP");
+   UTBSetLabelText("ERLBL",    "ER");
+   UTBSetLabelText("CFG_SRC_LBL", "Sorgente");
+   UTBSetLabelText("CFG_PRE_LBL", "Preset");
+   UTBSetLabelText("CFG_KEY_LBL", "Key / ATR");
   }
 
 //+------------------------------------------------------------------+
@@ -1226,66 +1344,63 @@ void UpdateUTBDashboard(bool forceUpdate = false)
       return;
    s_lastUpdate = now;
 
-   int y_base = 20, y_step = 16;
-   int row = 0;
+   //--- HEADER (icona ⚡ + nome + simbolo + TF) ---
+   UTBSetLabelText("HDR",
+      "UTBot v2.13  ▪  " + _Symbol + "  ▪  " + EnumToString(_Period));
 
-   //--- HEADER ---
-   UTBSetRow(row++, "UTBot v2.12 | " + _Symbol + " | " + EnumToString(_Period),
-             C'70,130,255', 10);
-   UTBSetRow(row++, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", C'60,70,100', 7);
-
-   //--- STATO POSIZIONE ---
+   //--- SEZIONE 1: STATO POSIZIONE ---
    int rt = g_dash_ratesTotal;
    if(rt >= 3)
      {
       int idx = rt - 2;   // ultima barra chiusa
 
-      // Stato
+      // State badge
       double stVal = B_State[idx];
-      string stTxt = (stVal > 0.5)  ? "LONG  ▲" :
-                     (stVal < -0.5) ? "SHORT ▼" : "NEUTRO —";
-      color  stClr = (stVal > 0.5)  ? C'50,220,120' :
-                     (stVal < -0.5) ? C'239,83,80'  : C'150,165,185';
-      UTBSetRow(row++, "Stato:   " + stTxt, stClr);
+      string stTxt;  color stClr;
+      if(stVal > 0.5)        { stTxt = "LONG  ▲";  stClr = CLR_STATE_LONG;  }
+      else if(stVal < -0.5)  { stTxt = "SHORT ▼";  stClr = CLR_STATE_SHORT; }
+      else                   { stTxt = "NEUTRO —"; stClr = CLR_STATE_NEUT;  }
+      UTBSetRectBG("BADGE", stClr);
+      UTBSetLabel ("BADGETXT", stTxt, CLR_HDR_TXT);
 
-      // Trail: valore real-time + delta dal prezzo corrente
+      // Trail value + delta
       double trailVal = B_Trail[rt - 1];
       double curPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       double delta    = curPrice - trailVal;
       string sign     = (delta >= 0) ? "+" : "";
-      UTBSetRow(row++, "Trail:   " + DoubleToString(trailVal, _Digits) +
-                "  (" + sign + DoubleToString(delta, _Digits) + ")", C'150,165,185');
+      UTBSetLabel("TRAILVAL",
+                  DoubleToString(trailVal, _Digits) +
+                  "  " + sign + DoubleToString(delta, _Digits),
+                  CLR_TXT_PRIMARY);
 
-      // ER: ultima barra chiusa + quality text
+      // ER value + barra grafica + qualità
       double erVal = B_ER[idx];
-      int    filled = (int)MathRound(erVal * 5.0);
-      string erBar = "";
-      for(int b = 0; b < 5; b++)
-         erBar += (b < filled) ? "#" : ".";
-      string erQual;
-      color  erClr;
-      if(erVal >= 0.60)      { erQual = "FORTE";    erClr = C'50,220,120'; }
-      else if(erVal >= 0.35) { erQual = "MODERATO"; erClr = C'255,180,50'; }
-      else if(erVal >= 0.15) { erQual = "DEBOLE";   erClr = C'255,235,59'; }
-      else                   { erQual = "RANGING";   erClr = C'150,165,185'; }
-      UTBSetRow(row++, "ER:      " + DoubleToString(erVal, 2) +
-                " " + erBar + " " + erQual, erClr);
+      string erQual; color erClr;
+      if(erVal >= 0.60)      { erQual = "FORTE";    erClr = CLR_ER_STRONG; }
+      else if(erVal >= 0.35) { erQual = "MODERATO"; erClr = CLR_ER_MEDIUM; }
+      else if(erVal >= 0.15) { erQual = "DEBOLE";   erClr = CLR_ER_WEAK;   }
+      else                   { erQual = "RANGING";  erClr = CLR_ER_RANGE;  }
+      UTBSetLabel("ERVAL", DoubleToString(erVal, 2), CLR_TXT_PRIMARY);
+      UTBSetRectBG("ERFILL", erClr);
+      UTBSetRectW ("ERFILL", (int)MathRound(MathMax(0.0, MathMin(1.0, erVal)) * 110.0));
+      UTBSetLabel ("ERQUAL", erQual, erClr);
      }
    else
      {
-      UTBSetRow(row++, "Stato:   ATTESA DATI...", C'150,165,185');
-      UTBSetRow(row++, "Trail:   ---", C'150,165,185');
-      UTBSetRow(row++, "ER:      ---", C'150,165,185');
+      UTBSetRectBG("BADGE", CLR_STATE_NEUT);
+      UTBSetLabel ("BADGETXT", "ATTESA…", CLR_HDR_TXT);
+      UTBSetLabel ("TRAILVAL", "---", CLR_TXT_DIM);
+      UTBSetLabel ("ERVAL",    "---", CLR_TXT_DIM);
+      UTBSetRectW ("ERFILL", 1);
+      UTBSetRectBG("ERFILL", CLR_ER_TRACK);
+      UTBSetLabel ("ERQUAL", "---", CLR_TXT_DIM);
      }
 
-   //--- CONFIG ---
-   UTBSetRow(row++, "━━━ CONFIG ━━━━━━━━━━━━━━━━━━━━━━━━━", C'60,70,100', 7);
-
-   // Sorgente
+   //--- SEZIONE 2: CONFIG ---
    string srcStr;
-   switch(g_eff_srcType)   // [v2.10] usa sorgente effettiva (coerente con short name + log)
+   switch(g_eff_srcType)
      {
-      case SRC_CLOSE: srcStr = "Close (originale)"; break;
+      case SRC_CLOSE: srcStr = "Close"; break;
       case SRC_HMA:   srcStr = "HMA(" + IntegerToString(InpHMAPeriod) + ")"; break;
       case SRC_KAMA:
          srcStr = "KAMA(" + IntegerToString(g_eff_kamaN) + "," +
@@ -1298,64 +1413,33 @@ void UpdateUTBDashboard(bool forceUpdate = false)
          break;
       default: srcStr = "?"; break;
      }
-   UTBSetRow(row++, "Sorgente: " + srcStr, C'150,165,185');
+   UTBSetLabel("CFG_SRC_VAL", srcStr, CLR_TXT_PRIMARY);
 
-   // Preset
    string presetStr;
    if(InpTFPreset == TF_PRESET_UT_AUTO)
-      presetStr = "AUTO " + EnumToString(_Period);
+      presetStr = "AUTO  ▸ " + EnumToString(_Period);
    else if(InpTFPreset == TF_PRESET_UT_MANUAL)
       presetStr = "MANUALE";
    else
       presetStr = EnumToString(InpTFPreset);
-   UTBSetRow(row++, "Preset:   " + presetStr, C'150,165,185');
+   UTBSetLabel("CFG_PRE_VAL", presetStr, CLR_TXT_PRIMARY);
 
-   // Key + ATR
-   UTBSetRow(row++, "Key: " + DoubleToString(g_eff_keyValue, 1) +
-             " | ATR: " + IntegerToString(g_eff_atrPeriod), C'150,165,185');
+   UTBSetLabel("CFG_KEY_VAL",
+               DoubleToString(g_eff_keyValue, 1) + "  /  " +
+               IntegerToString(g_eff_atrPeriod),
+               CLR_TXT_PRIMARY);
 
-   //--- VISUALS ---
-   UTBSetRow(row++, "━━━ VISUALS ━━━━━━━━━━━━━━━━━━━━━━━━", C'60,70,100', 7);
+   //--- SEZIONE 3: bottoni toggle ---
+   UTBSetBtn("TRAIL",   g_dash_vis_trail);
+   UTBSetBtn("ARROWS",  g_dash_vis_arrows);
+   UTBSetBtn("ENTRY",   g_dash_vis_entry);
+   UTBSetBtn("CANDLES", g_dash_vis_candles);
 
-   string vst;
-   color  vcl;
-
-   // Trail
-   vst = g_dash_vis_trail ? "● ON" : "○ OFF";
-   vcl = g_dash_vis_trail ? C'70,200,130' : C'50,70,120';
-   UTBSetRow(row, "Trail Line         " + vst, vcl);
-   UTBSetBtn("TRAIL", g_dash_vis_trail, y_base + 6 + row * y_step);
-   row++;
-
-   // Arrows
-   vst = g_dash_vis_arrows ? "● ON" : "○ OFF";
-   vcl = g_dash_vis_arrows ? C'70,200,130' : C'50,70,120';
-   UTBSetRow(row, "Frecce BUY/SELL    " + vst, vcl);
-   UTBSetBtn("ARROWS", g_dash_vis_arrows, y_base + 6 + row * y_step);
-   row++;
-
-   // Entry
-   vst = g_dash_vis_entry ? "● ON" : "○ OFF";
-   vcl = g_dash_vis_entry ? C'70,200,130' : C'50,70,120';
-   UTBSetRow(row, "Entry Level        " + vst, vcl);
-   UTBSetBtn("ENTRY", g_dash_vis_entry, y_base + 6 + row * y_step);
-   row++;
-
-   // Candles
-   vst = g_dash_vis_candles ? "● ON" : "○ OFF";
-   vcl = g_dash_vis_candles ? C'70,200,130' : C'50,70,120';
-   UTBSetRow(row, "Candele Trigger    " + vst, vcl);
-   UTBSetBtn("CANDLES", g_dash_vis_candles, y_base + 6 + row * y_step);
-   row++;
-
-   //--- Hide unused rows
-   for(int r = row; r < UTB_DASH_MAX_ROWS; r++)
-     {
-      string name = UTB_DASH_PREFIX + "R" + IntegerToString(r, 2, '0');
-      ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, OBJ_NO_PERIODS);
-     }
-
-   UTBResizeBG(row);
+   // Etichette righe in colore primary se ON, dim se OFF
+   UTBSetLabel("VIS_TRAIL",   "Trail Stop Line", g_dash_vis_trail   ? CLR_TXT_PRIMARY : CLR_TXT_DIM);
+   UTBSetLabel("VIS_ARROWS",  "Frecce BUY/SELL", g_dash_vis_arrows  ? CLR_TXT_PRIMARY : CLR_TXT_DIM);
+   UTBSetLabel("VIS_ENTRY",   "Entry Level",     g_dash_vis_entry   ? CLR_TXT_PRIMARY : CLR_TXT_DIM);
+   UTBSetLabel("VIS_CANDLES", "Candele Trigger", g_dash_vis_candles ? CLR_TXT_PRIMARY : CLR_TXT_DIM);
   }
 
 //+------------------------------------------------------------------+
