@@ -11,12 +11,24 @@
 #property copyright "Rattapignola (C) 2026"
 
 //+------------------------------------------------------------------+
-//| SFONDI — Cielo notturno                                          |
+//| SFONDI — Cielo notturno (palette dashboard Firefly)               |
 //+------------------------------------------------------------------+
-#define RATT_BG_DEEP         C'6,10,18'        // cielo notturno profondo, chart bg
+#define RATT_BG_DEEP         C'6,10,18'        // cielo notturno profondo, sfondo dashboard
 #define RATT_BG_PANEL        C'10,16,28'       // panel background
 #define RATT_BG_SECTION_A    C'14,22,36'       // sezioni alternate A
 #define RATT_BG_SECTION_B    C'18,28,42'       // sezioni alternate B
+
+//+------------------------------------------------------------------+
+//| CHART THEME — [v2.13] allineato a UTBotAdaptive-DA IMPLEMENTARE  |
+//|                                                                  |
+//| Costanti dedicate per il chart MT5 (background/foreground/grid). |
+//| Sono SEPARATE dalla palette dashboard Firefly per permettere      |
+//| fedelta' visiva 1:1 con l'indicatore standalone senza alterare    |
+//| l'identita' visiva del dashboard EA.                              |
+//+------------------------------------------------------------------+
+#define RATT_CHART_THEME_BG    C'19,23,34'      // [v2.13] indicatore InpThemeBG default
+#define RATT_CHART_THEME_FG    C'131,137,150'   // [v2.13] indicatore InpThemeFG default
+#define RATT_CHART_THEME_GRID  C'42,46,57'      // [v2.13] indicatore InpThemeGrid default
 
 //+------------------------------------------------------------------+
 //| BORDI — Verde campagna                                           |
@@ -93,18 +105,18 @@
 #define RATT_HS_CHAN_WIDTH    1                 // Spessore 1
 
 //+------------------------------------------------------------------+
-//| FRECCE SEGNALE — 4 livelli ER (UTBotAdaptive style)              |
+//| FRECCE SEGNALE — [v2.13] direzionali 2 toni (no giallo/grigio)   |
+//|                                                                  |
+//| Allineato a UTBotAdaptive-DA IMPLEMENTARE v2.12:                 |
+//|   - _0 = pieno  (ER >= 0.60)                                     |
+//|   - _1 = chiaro (ER < 0.60)                                      |
 //+------------------------------------------------------------------+
-#define RATT_ARROW_BUY_0       C'76,175,80'    // ER >= 0.60 — FORTE (verde scuro)
-#define RATT_ARROW_BUY_1       C'139,195,74'   // ER 0.35-0.59 — MODERATO (verde chiaro)
-#define RATT_ARROW_BUY_2       C'255,193,7'    // ER 0.15-0.34 — DEBOLE (giallo)
-#define RATT_ARROW_BUY_3       C'120,120,120'  // ER < 0.15 — RANGING (grigio)
-#define RATT_ARROW_SELL_0      C'239,83,80'    // ER >= 0.60 — FORTE (rosso)
-#define RATT_ARROW_SELL_1      C'255,138,101'  // ER 0.35-0.59 — MODERATO (arancio)
-#define RATT_ARROW_SELL_2      C'255,193,7'    // ER 0.15-0.34 — DEBOLE (giallo)
-#define RATT_ARROW_SELL_3      C'120,120,120'  // ER < 0.15 — RANGING (grigio)
-#define RATT_ARROW_SIZE        4               // Arrow width (UTBotAdaptive)
-#define RATT_ARROW_OFFSET      1.2             // Offset multiplier x ATR (UTBotAdaptive)
+#define RATT_ARROW_BUY_0       C'76,175,80'    // ER >= 0.60 — FORTE (verde pieno)
+#define RATT_ARROW_BUY_1       C'139,195,74'   // ER < 0.60  — MODERATO (verde chiaro)
+#define RATT_ARROW_SELL_0      C'239,83,80'    // ER >= 0.60 — FORTE (rosso pieno)
+#define RATT_ARROW_SELL_1      C'255,138,101'  // ER < 0.60  — MODERATO (rosso chiaro)
+#define RATT_ARROW_SIZE        2               // Arrow width [v2.13: allineato a indicator_width2/3 = 2]
+#define RATT_ARROW_OFFSET      0.5             // Offset multiplier x ATR [v2.13: allineato a g_atr[i] * 0.5 indicatore]
 
 //+------------------------------------------------------------------+
 //| ENTRY/EXIT                                                       |
@@ -158,7 +170,7 @@
 
 #define RATT_H_TITLE         50                // Title panel (full width)
 #define RATT_H_MODE          40                // Mode/Symbol panel (full width)
-#define RATT_H_ENGINE        145               // UTBot Engine (left col)
+#define RATT_H_ENGINE        178               // UTBot Engine (left col) — +33 per badge + toggle row v2.13
 #define RATT_H_SYSSTATUS     145               // System Status (right col)
 #define RATT_H_PL            115               // P&L Session (left col)
 #define RATT_H_CYCLES        145               // Active Cycles (right col)
@@ -185,20 +197,84 @@
 //| Quando ColorCandlesByTrend=false, lasciamo le candele native      |
 //| visibili con colori statici (senza rendering trend dall'EA).      |
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| ChartTheme Save/Restore [v2.13]                                  |
+//|                                                                  |
+//| Salva i colori originali del chart prima di applicare il tema    |
+//| Firefly, così OnDeinit puo' ripristinarli se l'utente disattiva  |
+//| InpApplyTheme. Globali NON persistenti tra sessioni MT5: se      |
+//| l'EA si riavvia con tema gia' applicato, "salveremo lo scuro     |
+//| come originale" e il restore sara' un no-op — accettabile.       |
+//+------------------------------------------------------------------+
+color g_origBG = clrNONE;
+color g_origFG = clrNONE;
+color g_origGrid = clrNONE;
+color g_origCandleBull = clrNONE;
+color g_origCandleBear = clrNONE;
+color g_origChartUp = clrNONE;
+color g_origChartDown = clrNONE;
+color g_origChartLine = clrNONE;
+color g_origAsk = clrNONE;
+color g_origBid = clrNONE;
+bool  g_origForeground = true;
+bool  g_origShowGrid = true;
+int   g_origShowVolumes = 0;
+bool  g_themeApplied = false;
+
+void SaveOriginalChartTheme()
+{
+   if(g_themeApplied) return;   // gia' salvato
+   g_origBG          = (color)ChartGetInteger(0, CHART_COLOR_BACKGROUND);
+   g_origFG          = (color)ChartGetInteger(0, CHART_COLOR_FOREGROUND);
+   g_origGrid        = (color)ChartGetInteger(0, CHART_COLOR_GRID);
+   g_origCandleBull  = (color)ChartGetInteger(0, CHART_COLOR_CANDLE_BULL);
+   g_origCandleBear  = (color)ChartGetInteger(0, CHART_COLOR_CANDLE_BEAR);
+   g_origChartUp     = (color)ChartGetInteger(0, CHART_COLOR_CHART_UP);
+   g_origChartDown   = (color)ChartGetInteger(0, CHART_COLOR_CHART_DOWN);
+   g_origChartLine   = (color)ChartGetInteger(0, CHART_COLOR_CHART_LINE);
+   g_origAsk         = (color)ChartGetInteger(0, CHART_COLOR_ASK);
+   g_origBid         = (color)ChartGetInteger(0, CHART_COLOR_BID);
+   g_origForeground  = (bool)ChartGetInteger(0, CHART_FOREGROUND);
+   g_origShowGrid    = (bool)ChartGetInteger(0, CHART_SHOW_GRID);
+   g_origShowVolumes = (int) ChartGetInteger(0, CHART_SHOW_VOLUMES);
+}
+
+void RestoreOriginalChartTheme()
+{
+   if(!g_themeApplied) return;
+   ChartSetInteger(0, CHART_COLOR_BACKGROUND,   g_origBG);
+   ChartSetInteger(0, CHART_COLOR_FOREGROUND,   g_origFG);
+   ChartSetInteger(0, CHART_COLOR_GRID,         g_origGrid);
+   ChartSetInteger(0, CHART_COLOR_CANDLE_BULL,  g_origCandleBull);
+   ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR,  g_origCandleBear);
+   ChartSetInteger(0, CHART_COLOR_CHART_UP,     g_origChartUp);
+   ChartSetInteger(0, CHART_COLOR_CHART_DOWN,   g_origChartDown);
+   ChartSetInteger(0, CHART_COLOR_CHART_LINE,   g_origChartLine);
+   ChartSetInteger(0, CHART_COLOR_ASK,          g_origAsk);
+   ChartSetInteger(0, CHART_COLOR_BID,          g_origBid);
+   ChartSetInteger(0, CHART_FOREGROUND,         g_origForeground);
+   ChartSetInteger(0, CHART_SHOW_GRID,          g_origShowGrid);
+   ChartSetInteger(0, CHART_SHOW_VOLUMES,       g_origShowVolumes);
+   g_themeApplied = false;
+}
+
 void ApplyChartTheme()
 {
-   ChartSetInteger(0, CHART_COLOR_BACKGROUND,   RATT_BG_DEEP);
-   ChartSetInteger(0, CHART_COLOR_FOREGROUND,   RATT_TEXT_HI);
-   ChartSetInteger(0, CHART_COLOR_GRID,         C'20,30,20');
+   // [v2.13] Palette chart allineata a UTBotAdaptive-DA IMPLEMENTARE (InpThemeBG/FG/Grid).
+   // Le candele native vengono nascoste con stesso colore del background per essere
+   // invisibili (allineato a indicatore CHART_COLOR_CANDLE_BULL = InpThemeBG).
+   ChartSetInteger(0, CHART_COLOR_BACKGROUND,   RATT_CHART_THEME_BG);
+   ChartSetInteger(0, CHART_COLOR_FOREGROUND,   RATT_CHART_THEME_FG);
+   ChartSetInteger(0, CHART_COLOR_GRID,         RATT_CHART_THEME_GRID);
 
    if(ColorCandlesByTrend)
    {
-      // Nascondi candele native: body + wick + doji line = colore sfondo
-      ChartSetInteger(0, CHART_COLOR_CANDLE_BULL,  RATT_BG_DEEP);
-      ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR,  RATT_BG_DEEP);
-      ChartSetInteger(0, CHART_COLOR_CHART_UP,     RATT_BG_DEEP);
-      ChartSetInteger(0, CHART_COLOR_CHART_DOWN,   RATT_BG_DEEP);
-      ChartSetInteger(0, CHART_COLOR_CHART_LINE,   RATT_BG_DEEP);
+      // Nascondi candele native: body + wick + doji line = colore chart bg (invisibili)
+      ChartSetInteger(0, CHART_COLOR_CANDLE_BULL,  RATT_CHART_THEME_BG);
+      ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR,  RATT_CHART_THEME_BG);
+      ChartSetInteger(0, CHART_COLOR_CHART_UP,     RATT_CHART_THEME_BG);
+      ChartSetInteger(0, CHART_COLOR_CHART_DOWN,   RATT_CHART_THEME_BG);
+      ChartSetInteger(0, CHART_COLOR_CHART_LINE,   RATT_CHART_THEME_BG);
       ChartSetInteger(0, CHART_FOREGROUND,          false);
    }
    else

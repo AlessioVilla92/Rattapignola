@@ -3,8 +3,8 @@
 //|  "Il canto della campagna nelle notti d'estate."                  |
 //+------------------------------------------------------------------+
 //|  Copyright (C) 2026 - Rattapignola Development                   |
-//|  Version: 1.2.0                                                   |
-//|  Engine: UTBot Adaptive — swappable                               |
+//|  Version: 1.5.0                                                   |
+//|  Engine: UTBot Adaptive v2.13 — swappable                         |
 //+------------------------------------------------------------------+
 //|                                                                  |
 //|  Rattapignola EA — Framework di trading modulare a 7 livelli     |
@@ -12,11 +12,15 @@
 //|  ARCHITETTURA:                                                   |
 //|    Layer 0: Config    — Enums, parametri input, interfaccia eng.  |
 //|    Layer 1: Core      — Variabili globali, helpers, sessioni      |
-//|    Layer 2: Engine    — UTBot Adaptive (trailing stop ATR adattivo)|
+//|    Layer 2: Engine    — UTBot Adaptive v2.13 (trailing stop ATR)  |
 //|             ↳ Trailing stop adattivo basato su ATR × KeyValue     |
 //|             ↳ Sorgente: KAMA/HMA/JMA/Close (adattive)             |
+//|             ↳ Auto-Source per TF (M5/M15→KAMA, altri→JMA)         |
+//|             ↳ KAMA preset AUTO/STANDARD/MIDDLE/SLOW/MANUAL        |
+//|             ↳ ER Kaufman uniforme (cross-source coerente)         |
 //|             ↳ Classificazione TBS/TWS (qualita' ER)               |
-//|             ↳ Auto TF Preset (parametri adattivi per TF)          |
+//|             ↳ TF Preset espliciti (AUTO/M1/M5/M15/M30/H1/H4)      |
+//|             ↳ State (+1/-1/0) e EntryLevel carry-forward          |
 //|    Layer 3: Orders    — Risk manager, lot sizing, order placement |
 //|             ↳ 3 risk modes (Fixed/Percent/Cash)                   |
 //|             ↳ Moltiplicatore TBS/TWS lotti (TBS=2x, TWS=1x)      |
@@ -43,30 +47,180 @@
 //|    Auto-detection della classe strumento dal nome simbolo          |
 //|                                                                  |
 //+------------------------------------------------------------------+
+//|                          CHANGELOG                                |
+//+------------------------------------------------------------------+
+//|                                                                  |
+//|  v1.5.0 — 2026-04-27 — UTBot Engine allineato a v2.13            |
+//|                                                                  |
+//|  Sintesi: l'engine UTBot dell'EA e' ora identico funzionalmente   |
+//|  e visivamente all'indicatore standalone UTBotAdaptive-DA         |
+//|  IMPLEMENTARE.mq5 v2.13. Calcoli, segnali, frecce, candele,       |
+//|  entry-level, theme chart: tutto sincronizzato 1:1.               |
+//|                                                                  |
+//|  ── A. INPUTS & ENUMS [Config/rattEnums.mqh +                    |
+//|        Config/rattInputParameters.mqh] ─────────────────────     |
+//|                                                                  |
+//|    1. ENUM_UTB_TF_PRESET esteso a 8 valori:                       |
+//|       AUTO/M1/M5/M15/M30/H1/H4/MANUAL.                            |
+//|       Permette override esplicito del preset per testing.        |
+//|                                                                  |
+//|    2. ENUM_KAMA_PRESET nuovo:                                     |
+//|       AUTO/STANDARD(10,2,30)/MIDDLE(14,4,50)/SLOW(20,6,80)/      |
+//|       MANUAL.                                                     |
+//|       AUTO: M1/M5 → STANDARD, M15+ → MIDDLE (anti-microstorno).   |
+//|                                                                  |
+//|    3. Nuovi input opzionali:                                      |
+//|       • InpAutoSrcByTF=false — auto-sorgente per TF (opt-in)      |
+//|       • InpKamaPreset=MANUAL — preset KAMA flessibile              |
+//|       • InpERKaufmanUniform=true — fix bug ER scale (DEFAULT ON) |
+//|       • InpMonochromeArrows=false — frecce sempre verde/rosso    |
+//|       • InpShowEntryLine=true — entry level multi-segment        |
+//|       • InpApplyTheme=false — tema chart navy+teal (opt-in)      |
+//|                                                                  |
+//|  ── B. ENGINE CORE [Engine/rattUTBotEngine.mqh] ────────────     |
+//|                                                                  |
+//|    1. UTBPreset esteso con campo autoSrcType.                    |
+//|       Tabella preset popolata: M5/M15→KAMA, altri TF→JMA.        |
+//|                                                                  |
+//|    2. UTBResolvePresetEnum: mappa enum input → indice tabella.   |
+//|       AUTO usa Period(); M1..H4 forzano indice 0..5; MANUAL=-1.  |
+//|                                                                  |
+//|    3. UTBApplyKamaPreset: override KAMA params dopo TF preset.   |
+//|       Allineato 1:1 a UTBotKamaPresetApply indicatore.            |
+//|                                                                  |
+//|    4. g_utb_srcEffective: nuova globale per sorgente effettiva.   |
+//|       Settata in UTBApplyPreset/UTBApplyManual rispettando       |
+//|       InpAutoSrcByTF. Tutto il codice engine + overlay legge       |
+//|       questa variabile (era InpSrcType).                          |
+//|                                                                  |
+//|    5. FIX BUG ER: UTBCalcER ora supporta Kaufman uniforme.        |
+//|       Se InpERKaufmanUniform=true → ER Kaufman su close[]         |
+//|       finestra kamaN per TUTTE le sorgenti (scala 0..1 coerente). |
+//|       Risolve incoerenza con soglie InpERStrong/Weak cross-src.   |
+//|                                                                  |
+//|    6. g_utb_state (+1/-1/0) e g_utb_entryLevel: nuove globali     |
+//|       carry-forward, popolate in EngineCalculate STEP 7 e         |
+//|       UTBWarmupEngine. Equivalenti a B_State/B_EntryLine          |
+//|       indicatore. Esposte via sig.extraValues[5..7].              |
+//|                                                                  |
+//|    7. Formula segnale STEP 4 allineata a indicatore:              |
+//|       (src_prev<trail_prev) && (src>trail) — rimosso fallback     |
+//|       src_prev==0 ridondante grazie al warmup.                    |
+//|                                                                  |
+//|    8. closeLookback STEP 2 esteso a kamaN+2 quando                |
+//|       InpERKaufmanUniform=true (storia sufficiente per ER).      |
+//|                                                                  |
+//|    9. EngineInit ordine: ResolvePresetEnum → ApplyPreset/Manual   |
+//|       → ApplyKamaPreset → InitJMAConstants (se srcEff=JMA) →      |
+//|       Warmup. Garantisce srcEffective noto prima di JMA warmup.   |
+//|                                                                  |
+//|    10. UTBWarmupEngine traccia state ed entryLevel storici per   |
+//|        allineare il primo OnTick reale ai valori indicatore.     |
+//|                                                                  |
+//|  ── C. OVERLAY GRAFICO [UI/rattChannelOverlay.mqh] ─────────     |
+//|                                                                  |
+//|    1. Frecce v2.12 direzionali (no giallo/grigio):                |
+//|       • InpMonochromeArrows=true → solo verde/rosso pieno         |
+//|       • ER >= 0.60 → pieno (RATT_ARROW_BUY_0 / SELL_0)             |
+//|       • ER <  0.60 → chiaro (RATT_ARROW_BUY_1 / SELL_1)            |
+//|                                                                  |
+//|    2. Entry level multi-segment OBJ_TREND dashed viola:           |
+//|       Accumulo signalTimes/signalEntries durante scan storico,    |
+//|       poi N segmenti consecutivi con RAY_RIGHT sull'ultimo.      |
+//|       Replica B_EntryLine[] indicatore (carry-forward bar-bar).   |
+//|                                                                  |
+//|    3. Candele trigger gialle direttamente sul body (arrIsTrigger  |
+//|       array). Eliminato rectangle separato RATT_TRIG_CDL_*       |
+//|       (sostituito da color giallo nel body OBJ_RECTANGLE).        |
+//|                                                                  |
+//|    4. Frecce: width 2 + offset 0.5×ATR (allineati a indicatore   |
+//|       indicator_width2/3 = 2 e g_atr[i]*0.5).                     |
+//|                                                                  |
+//|    5. ER calc nello scan storico: useKaufman = srcEff==KAMA OR    |
+//|       InpERKaufmanUniform → formula identica a UTBCalcER engine.  |
+//|       Lookback esteso a kamaN+5 anche per non-KAMA quando ER     |
+//|       uniforme attivo.                                            |
+//|                                                                  |
+//|    6. Toggle visibility g_dash_show_trail/arrows/entry/candles    |
+//|       gatano disegno + cleanup oggetti su disattivazione.        |
+//|                                                                  |
+//|  ── D. PANNELLO ENGINE [UI/rattDashboard.mqh] ──────────────     |
+//|                                                                  |
+//|    Pannello UTBot Engine esteso (NON sostituito) con:             |
+//|     • Badge stato LONG▲/SHORT▼/NEUTRO— colorato (extraValues[5]). |
+//|     • ER bar grafica con fill proporzionale (verde/ambra/dim).    |
+//|     • 4 toggle button (TRAIL/ARROWS/ENTRY/CANDLES) prefisso       |
+//|       RATT_DASH_TGL_, dispatcher in OnChartEvent.                |
+//|     • Mostra KAMA preset, sorgente effettiva, AutoTF flag.        |
+//|     • RATT_H_ENGINE 145→178px per accomodare badge + toggle.     |
+//|                                                                  |
+//|  ── E. THEME CHART [Config/rattVisualTheme.mqh] ────────────     |
+//|                                                                  |
+//|    1. SaveOriginalChartTheme/RestoreOriginalChartTheme:           |
+//|       backup/restore palette chart originale al boot/deinit.      |
+//|       Restore solo su REASON_REMOVE/CHART_CLOSE (no flicker su    |
+//|       PARAMETERS/CHARTCHANGE/TEMPLATE).                           |
+//|                                                                  |
+//|    2. Costanti chart-theme dedicate (separate da palette          |
+//|       Firefly dashboard) allineate 1:1 a InpThemeBG/FG/Grid:      |
+//|       • RATT_CHART_THEME_BG    = C'19,23,34' (navy)              |
+//|       • RATT_CHART_THEME_FG    = C'131,137,150' (testo/assi)     |
+//|       • RATT_CHART_THEME_GRID  = C'42,46,57'                     |
+//|       Le candele native vengono nascoste con stesso bg chart       |
+//|       (invisibili sotto i nostri OBJ_RECTANGLE).                  |
+//|                                                                  |
+//|    3. ApplyChartTheme gateato in OnInit con:                      |
+//|       if(InpApplyTheme || ColorCandlesByTrend) → applica.        |
+//|       Default opt-in (InpApplyTheme=false): l'utente sceglie.    |
+//|                                                                  |
+//|  ── F. CLEANUP DEAD CODE ────────────────────────────────────    |
+//|                                                                  |
+//|    Rimossi 4 elementi obsoleti (~70 righe):                       |
+//|     • Macro alias frecce RATT_ARROW_*_2/_3 (no usi)               |
+//|     • Input deprecato HsCloseOnSoupProfit (v1.7.2 deprecation)    |
+//|     • Funzione UTBWarmupJMA() (sostituita da UTBWarmupEngine)    |
+//|     • Globale g_utb_atrHandle (handle iATR mai usato per         |
+//|       CopyBuffer — calcolo ATR Wilder e' manuale)                 |
+//|     • Warning compile ArraySetAsSeries su array static fixato.    |
+//|                                                                  |
+//|  ── COMPATIBILITA' ───────────────────────────────────────────    |
+//|                                                                  |
+//|  Contratto EngineSignal IMMUTABILE: i nuovi dati (state,          |
+//|  entryLevel, srcEffective) vanno in extraValues[5..7]. Layer       |
+//|  Orders/Filters/Persistence/Virtual/UI invariati a livello API.    |
+//|  HTF Filter (rattHTFFilter) NON toccato — e' un layer separato    |
+//|  framework, non la ricorsione iCustom rimossa in indicatore v2.11.|
+//|                                                                  |
+//+------------------------------------------------------------------+
 #property copyright "Rattapignola (C) 2026"
-#property version   "1.20"
-#property description "Rattapignola EA v1.2.0 — Reusable Trading Framework"
-#property description "Engine: UTBot Adaptive (Trailing Stop ATR Adattivo)"
-#property description "Segnali: UTBot Crossover (TBS forte 2x / TWS debole 1x)"
-#property description "TP: Signal-to-Signal (flip strategy)"
-#property description "Anti-repaint: bar[1] signals only"
+#property version   "1.50"
+#property description "Rattapignola EA v1.5.0 — UTBot Adaptive v2.13"
+#property description "Engine UTBot allineato 1:1 a UTBotAdaptive-DA IMPLEMENTARE v2.13"
+#property description "Auto-Source TF (M5/M15=KAMA), KAMA preset AUTO/STD/MID/SLOW"
+#property description "ER Kaufman uniforme cross-source, frecce v2.12 direzionali"
+#property description "Entry level multi-segment carry-forward, theme chart opt-in"
+#property description "TP: Signal-to-Signal (flip strategy) | Anti-repaint: bar[1] only"
 #property strict
 
 //+------------------------------------------------------------------+
-//| RENDERING DIRETTO v1.3                                           |
+//| RENDERING DIRETTO v1.5.0                                         |
 //|                                                                  |
 //| L'EA disegna direttamente TUTTA la grafica trend/segnali:        |
 //|  - Candele colorate per trend (OBJ_RECTANGLE body + OBJ_TREND   |
-//|    wick) — teal bull, coral bear, giallo trigger                 |
-//|  - Trail line teal/coral (OBJ_TREND segmenti)                   |
-//|  - Frecce BUY/SELL ER-colored (OBJ_ARROW)                       |
-//|  - Entry level dashed viola (OBJ_HLINE)                          |
+//|    wick) — teal bull, coral bear, giallo trigger su segnale     |
+//|  - Trail line teal/coral (OBJ_TREND segmenti, width 2)          |
+//|  - Frecce BUY/SELL direzionali (OBJ_ARROW codice 233/234,        |
+//|    width 2, offset 0.5 × ATR — allineato a indicatore v2.13)    |
+//|  - Entry level dashed viola multi-segment carry-forward          |
+//|    (OBJ_TREND con STYLE_DASH e RAY_RIGHT su ultimo segmento)     |
 //|  - Dashboard + control buttons + TP markers + HS markers         |
+//|  - Pannello Engine v2.13: badge stato + ER bar + 4 toggle button |
 //|                                                                  |
 //| Le candele native MT5 vengono nascoste via ApplyChartTheme       |
-//| (CHART_COLOR_CANDLE_*/CHART_UP/DOWN = BG_DEEP).                  |
-//| I calcoli (ATR Wilder, trail, sorgente adattiva) sono identici   |
-//| all'indicatore UTBotAdaptive.mq5 dopo il fix dei 3 bug engine.  |
+//| (CHART_COLOR_CANDLE_*/CHART_UP/DOWN = RATT_CHART_THEME_BG).      |
+//| Palette chart allineata a InpThemeBG/FG/Grid indicatore.         |
+//| I calcoli (ATR Wilder, trail, sorgente, ER, state, entryLevel)   |
+//| sono identici 1:1 a UTBotAdaptive-DA IMPLEMENTARE.mq5 v2.13.    |
 //+------------------------------------------------------------------+
 
 //+------------------------------------------------------------------+
@@ -135,7 +289,19 @@ int OnInit()
    g_systemStartTime = TimeCurrent();
 
    // Dashboard e tema prima di tutto — visibile anche in caso di errore
-   ApplyChartTheme();
+   // [v2.13] Tema chart applicato solo se InpApplyTheme=true (opt-in).
+   //   Se ColorCandlesByTrend=true, ApplyChartTheme nasconde anche le candele
+   //   native — necessario per evitare che si vedano sotto i nostri rectangle.
+   //   Quindi se l'utente vuole ColorCandlesByTrend, di fatto deve attivare
+   //   anche InpApplyTheme (fail-safe: applichiamo lo stesso, log warning).
+   if(InpApplyTheme || ColorCandlesByTrend)
+   {
+      SaveOriginalChartTheme();
+      ApplyChartTheme();
+      g_themeApplied = true;
+      if(!InpApplyTheme && ColorCandlesByTrend)
+         AdLogW(LOG_CAT_INIT, "ApplyTheme=false ma ColorCandlesByTrend=true: tema applicato per nascondere candele native");
+   }
    ObjectsDeleteAll(0, "UTB_DASH_");  // Pulizia residui indicatore standalone
 
    CreateDashboard();
@@ -291,6 +457,18 @@ void OnDeinit(const int reason)
    CleanupOverlay();
    CleanupSignalMarkers();
    DestroyDashboard();
+
+   // [v2.13] Ripristina tema chart originale solo su REMOVE/CHART_CLOSE.
+   //   Su CHARTCHANGE/PARAMETERS/TEMPLATE l'EA si reinizializzera' subito,
+   //   il restore causerebbe flicker visivo inutile.
+   if(g_themeApplied
+      && reason != REASON_PARAMETERS
+      && reason != REASON_CHARTCHANGE
+      && reason != REASON_TEMPLATE)
+   {
+      RestoreOriginalChartTheme();
+      AdLogI(LOG_CAT_SYSTEM, "Chart theme restored to original");
+   }
 
    EventKillTimer();
    AdLogI(LOG_CAT_SYSTEM, StringFormat("DEINIT — Reason: %d", reason));
@@ -561,7 +739,13 @@ void OnChartEvent(const int id, const long &lparam,
                   const double &dparam, const string &sparam)
 {
    if(id == CHARTEVENT_OBJECT_CLICK)
-      HandleButtonClick(sparam);
+   {
+      // [v2.13] Toggle button del pannello Engine (Trail/Arrows/Entry/Candles)
+      if(StringFind(sparam, "RATT_DASH_TGL_") == 0)
+         HandleEngineToggle(sparam);
+      else
+         HandleButtonClick(sparam);
+   }
 
    // Redraw su scroll/zoom/resize + live edge update
    if(id == CHARTEVENT_CHART_CHANGE)

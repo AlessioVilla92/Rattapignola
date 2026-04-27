@@ -92,6 +92,16 @@ int g_sqzHandle = INVALID_HANDLE;
 EngineSignal g_lastSignal;
 
 //+------------------------------------------------------------------+
+//| DASHBOARD VISIBILITY TOGGLES [v2.13]                             |
+//| 4 toggle button nel pannello Engine controllano show/hide degli  |
+//| oggetti grafici overlay. Default tutti ON (comportamento legacy).|
+//+------------------------------------------------------------------+
+bool g_dash_show_trail   = true;
+bool g_dash_show_arrows  = true;
+bool g_dash_show_entry   = true;
+bool g_dash_show_candles = true;
+
+//+------------------------------------------------------------------+
 //| SIGNAL TRACKING                                                  |
 //+------------------------------------------------------------------+
 int      g_totalSignals     = 0;

@@ -22,4 +22,5 @@ void CleanupSignalMarkers()
    ObjectsDeleteAll(0, "RATT_HLBL_");
    ObjectsDeleteAll(0, "RATT_TRIG_CDL_");
    ObjectDelete(0, "RATT_ENTRY_LEVEL");
+   ObjectsDeleteAll(0, "RATT_ENTRY_SEG_"); // [v2.13] entry level multi-segment
 }

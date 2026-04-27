@@ -116,7 +116,13 @@ enum ENUM_INSTRUMENT_CLASS
 enum ENUM_UTB_TF_PRESET
 {
    UTB_TF_AUTO   = 0,    // Auto (basato su Period())
-   UTB_TF_MANUAL = 1     // Manuale (usa input diretti)
+   UTB_TF_M1     = 1,    // [v2.13] Forza preset M1
+   UTB_TF_M5     = 2,    // [v2.13] Forza preset M5
+   UTB_TF_M15    = 3,    // [v2.13] Forza preset M15
+   UTB_TF_M30    = 4,    // [v2.13] Forza preset M30
+   UTB_TF_H1     = 5,    // [v2.13] Forza preset H1
+   UTB_TF_H4     = 6,    // [v2.13] Forza preset H4
+   UTB_TF_MANUAL = 7     // Manuale (usa input diretti)
 };
 
 enum ENUM_UTB_SRC_TYPE
@@ -125,6 +131,18 @@ enum ENUM_UTB_SRC_TYPE
    UTB_SRC_HMA   = 1,    // Hull Moving Average
    UTB_SRC_KAMA  = 2,    // Kaufman Adaptive MA (raccomandato)
    UTB_SRC_JMA   = 3     // Jurik-style MA (quasi zero lag)
+};
+
+//+------------------------------------------------------------------+
+//| KAMA PRESET — preset parametri Kaufman ER/Fast/Slow [v2.10]      |
+//+------------------------------------------------------------------+
+enum ENUM_KAMA_PRESET
+{
+   KAMA_PRESET_AUTO     = 0,    // Auto (M1/M5=STANDARD, M15+=MIDDLE)
+   KAMA_PRESET_STANDARD = 1,    // (10,2,30) — Kaufman classico reattivo
+   KAMA_PRESET_MIDDLE   = 2,    // (14,4,50) — anti-microstorno (raccomandato M15)
+   KAMA_PRESET_SLOW     = 3,    // (20,6,80) — swing filter H1/H4
+   KAMA_PRESET_MANUAL   = 4     // Manuale (usa InpKAMA_N/Fast/Slow)
 };
 
 //+------------------------------------------------------------------+
@@ -178,4 +196,4 @@ struct CycleRecord
 //| COSTANTI GLOBALI                                                 |
 //+------------------------------------------------------------------+
 const int    MAX_CYCLES         = 10;      // Max cicli contemporanei (array size)
-const string EA_VERSION         = "1.3.0";
+const string EA_VERSION         = "1.5.0";  // [v1.5.0] UTBot v2.13 + sync visivo + dead code cleanup

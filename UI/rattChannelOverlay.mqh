@@ -42,25 +42,24 @@ bool IsNewBarOverlay()
 }
 
 //+------------------------------------------------------------------+
-//| GetSignalArrowColor — 4 livelli ER (UTBotAdaptive style)         |
+//| GetSignalArrowColor — [v2.13] frecce direzionali 2 toni          |
+//|                                                                  |
+//| Allineato a UTBotAdaptive-DA IMPLEMENTARE v2.12:                 |
+//|   - InpMonochromeArrows=true: sempre verde/rosso pieno           |
+//|   - ER >= 0.60: verde-pieno (BUY) / rosso-pieno (SELL)           |
+//|   - ER <  0.60: verde-chiaro / rosso-chiaro                      |
+//| Mai giallo, mai grigio (rimossi in v2.12 per evitare bias        |
+//| visivo contro segnali a bassa ER).                                |
 //+------------------------------------------------------------------+
 color GetSignalArrowColor(bool isBuy, double er)
 {
-   int erIdx = (er >= 0.60) ? 0 : (er >= 0.35) ? 1 : (er >= 0.15) ? 2 : 3;
-   if(isBuy)
-   {
-      if(erIdx == 0) return RATT_ARROW_BUY_0;
-      if(erIdx == 1) return RATT_ARROW_BUY_1;
-      if(erIdx == 2) return RATT_ARROW_BUY_2;
-      return RATT_ARROW_BUY_3;
-   }
-   else
-   {
-      if(erIdx == 0) return RATT_ARROW_SELL_0;
-      if(erIdx == 1) return RATT_ARROW_SELL_1;
-      if(erIdx == 2) return RATT_ARROW_SELL_2;
-      return RATT_ARROW_SELL_3;
-   }
+   if(InpMonochromeArrows)
+      return isBuy ? RATT_ARROW_BUY_0 : RATT_ARROW_SELL_0;
+
+   if(er >= 0.60)
+      return isBuy ? RATT_ARROW_BUY_0 : RATT_ARROW_SELL_0;
+
+   return isBuy ? RATT_ARROW_BUY_1 : RATT_ARROW_SELL_1;
 }
 
 //+------------------------------------------------------------------+
@@ -85,10 +84,14 @@ void DrawChannelOverlay()
    int atrPeriod = (g_utb_atrPeriod > 0) ? g_utb_atrPeriod : 14;
    int lookback = MathMax(atrPeriod, 50) + 5;
 
-   if(InpSrcType == UTB_SRC_HMA)
+   if(g_utb_srcEffective == UTB_SRC_HMA)
       lookback += g_utb_hmaPeriod * 2 + 10;
-   else if(InpSrcType == UTB_SRC_KAMA)
+   else if(g_utb_srcEffective == UTB_SRC_KAMA)
       lookback += g_utb_kamaN + 5;
+
+   // [v2.13] ER Kaufman uniforme richiede kamaN+2 close[] anche per sorgenti non-KAMA
+   if(InpERKaufmanUniform)
+      lookback = MathMax(lookback, atrPeriod + g_utb_kamaN + 5);
 
    if(totalBars < lookback + 5) return;
    depth = MathMin(depth, totalBars - lookback);
@@ -132,7 +135,7 @@ void DrawChannelOverlay()
    double save_uBand[], save_lBand[], save_volty[], save_vSum[];
    double save_e0_arr[], save_det0[], save_det1[], save_src_arr[];
 
-   if(InpSrcType == UTB_SRC_JMA)
+   if(g_utb_srcEffective == UTB_SRC_JMA)
    {
       save_jma_init    = g_utb_jma_init;
       save_jma_histLen = g_utb_jma_histLen;
@@ -166,20 +169,30 @@ void DrawChannelOverlay()
    // Arrays per risultati visibili
    double arrTrail[], arrSrc[];
    datetime arrT[];
+   bool   arrIsTrigger[];   // [v2.13] true se la bar i e' una trigger (giallo)
    ArrayResize(arrTrail, depth + 1);
    ArrayResize(arrSrc, depth + 1);
    ArrayResize(arrT, depth + 1);
+   ArrayResize(arrIsTrigger, depth + 1);
    ArrayInitialize(arrTrail, 0);
    ArrayInitialize(arrSrc, 0);
+   ArrayInitialize(arrIsTrigger, false);
 
    double trail = 0, src = 0, src_prev = 0;
 
    // Pulizia vecchi marker storici
    ObjectsDeleteAll(0, "RATT_HSIG_");
    ObjectsDeleteAll(0, "RATT_TRIG_CDL_");
+   ObjectsDeleteAll(0, "RATT_ENTRY_SEG_");   // [v2.13] cleanup multi-segment entry level
 
    int signalCount = 0;
-   double lastEntryPrice = 0;
+
+   // [v2.13] accumulatore segnali per entry level multi-segment carry-forward.
+   // Salviamo (time, entryPrice) di ogni segnale rilevato durante lo scan.
+   datetime signalTimes[];
+   double   signalEntries[];
+   ArrayResize(signalTimes, 0);
+   ArrayResize(signalEntries, 0);
 
    // SCAN: oldest to newest (i decrescente in array as-series)
    for(int i = bufSize - 2; i >= 0; i--)
@@ -211,7 +224,7 @@ void DrawChannelOverlay()
 
       // Sorgente adattiva
       double curSrc = closeBuf[i];
-      switch(InpSrcType)
+      switch(g_utb_srcEffective)
       {
          case UTB_SRC_CLOSE:
             curSrc = closeBuf[i];
@@ -311,15 +324,19 @@ void DrawChannelOverlay()
       }
 
       // Signal detection + frecce storiche (solo per barre nel range visibile)
-      if(i <= depth && i >= 1 && ShowSignalArrows)
+      if(i <= depth && i >= 1)
       {
          bool isBuy  = (src_prev < trail_prev) && (src > trail);
          bool isSell = (src_prev > trail_prev) && (src < trail);
 
          if(isBuy || isSell)
          {
+            // [v2.13] ER allineato a engine UTBCalcER:
+            //   useKaufman se srcEffective==KAMA OR InpERKaufmanUniform
+            //   altrimenti proxy |Δsrc|/atr (legacy)
             double er;
-            if(InpSrcType == UTB_SRC_KAMA && (i + g_utb_kamaN) < bufSize)
+            bool useKaufman = (g_utb_srcEffective == UTB_SRC_KAMA) || InpERKaufmanUniform;
+            if(useKaufman && (i + g_utb_kamaN) < bufSize)
             {
                double d = MathAbs(closeBuf[i] - closeBuf[i + g_utb_kamaN]);
                double n = 0;
@@ -333,45 +350,46 @@ void DrawChannelOverlay()
             if(er >= InpERWeak || InpShowWeakSig)
             {
                datetime barTime = iTime(_Symbol, PERIOD_CURRENT, i);
-               string arrowName = "RATT_HSIG_" + IntegerToString(i);
-               color arrowClr = GetSignalArrowColor(isBuy, er);
-               double arrowPrice;
-               int arrowCode;
 
-               if(isBuy)
+               // [v2.13] flag candela trigger (gialla) + accumulo segnale per entry-level
+               arrIsTrigger[i] = true;
+
+               int n = ArraySize(signalTimes);
+               ArrayResize(signalTimes, n + 1);
+               ArrayResize(signalEntries, n + 1);
+               signalTimes[n]   = barTime;
+               signalEntries[n] = closeBuf[i];
+
+               // Frecce direzionali v2.12 (solo se attive)
+               // [v2.13] toggle: skip se utente ha disabilitato arrows
+               if(ShowSignalArrows && g_dash_show_arrows)
                {
-                  arrowPrice = lowBuf[i] - atr_w * RATT_ARROW_OFFSET;
-                  arrowCode = 233;
-               }
-               else
-               {
-                  arrowPrice = highBuf[i] + atr_w * RATT_ARROW_OFFSET;
-                  arrowCode = 234;
-               }
+                  string arrowName = "RATT_HSIG_" + IntegerToString(i);
+                  color arrowClr = GetSignalArrowColor(isBuy, er);
+                  double arrowPrice;
+                  int arrowCode;
 
-               ObjectCreate(0, arrowName, OBJ_ARROW, 0, barTime, arrowPrice);
-               ObjectSetInteger(0, arrowName, OBJPROP_ARROWCODE, arrowCode);
-               ObjectSetInteger(0, arrowName, OBJPROP_COLOR, arrowClr);
-               ObjectSetInteger(0, arrowName, OBJPROP_WIDTH, RATT_ARROW_SIZE);
-               ObjectSetInteger(0, arrowName, OBJPROP_ANCHOR, isBuy ? ANCHOR_TOP : ANCHOR_BOTTOM);
-               ObjectSetInteger(0, arrowName, OBJPROP_BACK, false);
-               ObjectSetInteger(0, arrowName, OBJPROP_SELECTABLE, false);
-               ObjectSetInteger(0, arrowName, OBJPROP_HIDDEN, true);
+                  if(isBuy)
+                  {
+                     arrowPrice = lowBuf[i] - atr_w * RATT_ARROW_OFFSET;
+                     arrowCode = 233;
+                  }
+                  else
+                  {
+                     arrowPrice = highBuf[i] + atr_w * RATT_ARROW_OFFSET;
+                     arrowCode = 234;
+                  }
 
-               // Trigger candle highlight (giallo)
-               datetime t2 = barTime + PeriodSeconds();
-               string trigName = "RATT_TRIG_CDL_" + TimeToString(barTime, TIME_DATE|TIME_MINUTES);
-               if(ObjectFind(0, trigName) < 0)
-               {
-                  ObjectCreate(0, trigName, OBJ_RECTANGLE, 0, barTime, highBuf[i], t2, lowBuf[i]);
-                  ObjectSetInteger(0, trigName, OBJPROP_COLOR, RATT_TRIGGER_CANDLE_CLR);
-                  ObjectSetInteger(0, trigName, OBJPROP_FILL, true);
-                  ObjectSetInteger(0, trigName, OBJPROP_BACK, false);
-                  ObjectSetInteger(0, trigName, OBJPROP_SELECTABLE, false);
-                  ObjectSetInteger(0, trigName, OBJPROP_HIDDEN, true);
+                  ObjectCreate(0, arrowName, OBJ_ARROW, 0, barTime, arrowPrice);
+                  ObjectSetInteger(0, arrowName, OBJPROP_ARROWCODE, arrowCode);
+                  ObjectSetInteger(0, arrowName, OBJPROP_COLOR, arrowClr);
+                  ObjectSetInteger(0, arrowName, OBJPROP_WIDTH, RATT_ARROW_SIZE);
+                  ObjectSetInteger(0, arrowName, OBJPROP_ANCHOR, isBuy ? ANCHOR_TOP : ANCHOR_BOTTOM);
+                  ObjectSetInteger(0, arrowName, OBJPROP_BACK, false);
+                  ObjectSetInteger(0, arrowName, OBJPROP_SELECTABLE, false);
+                  ObjectSetInteger(0, arrowName, OBJPROP_HIDDEN, true);
                }
 
-               lastEntryPrice = closeBuf[i];
                signalCount++;
             }
          }
@@ -379,7 +397,7 @@ void DrawChannelOverlay()
    }
 
    // JMA: Restore global state
-   if(InpSrcType == UTB_SRC_JMA)
+   if(g_utb_srcEffective == UTB_SRC_JMA)
    {
       g_utb_jma_init    = save_jma_init;
       g_utb_jma_histLen = save_jma_histLen;
@@ -409,9 +427,13 @@ void DrawChannelOverlay()
       bool isBull = (arrSrc[i] > arrTrail[i]);
 
       // === CANDELE COLORATE PER TREND ===
-      if(ColorCandlesByTrend && i >= 1)
+      // [v2.13] toggle: skip se utente ha disabilitato candles
+      if(ColorCandlesByTrend && i >= 1 && g_dash_show_candles)
       {
-         color candleClr = isBull ? RATT_CANDLE_BULL : RATT_CANDLE_BEAR;
+         // [v2.13] candela trigger gialla (allineato a B_CClr=2 indicatore)
+         color candleClr = arrIsTrigger[i]
+                              ? RATT_TRIGGER_CANDLE_CLR
+                              : (isBull ? RATT_CANDLE_BULL : RATT_CANDLE_BEAR);
 
          // Body: OBJ_RECTANGLE da Open a Close
          string bodyName = "RATT_TCOL_B_" + IntegerToString(i);
@@ -457,7 +479,8 @@ void DrawChannelOverlay()
       }
 
       // === TRAIL LINE ===
-      if(ShowChannelOverlay && i < depth - 1 && arrTrail[i + 1] > 0)
+      // [v2.13] toggle: skip se utente ha disabilitato trail
+      if(ShowChannelOverlay && g_dash_show_trail && i < depth - 1 && arrTrail[i + 1] > 0)
       {
          datetime t2trail = arrT[i + 1];
          if(t2trail == 0) continue;
@@ -484,18 +507,37 @@ void DrawChannelOverlay()
       }
    }
 
-   // Entry level per l'ultimo segnale trovato
-   if(lastEntryPrice > 0)
+   // [v2.13] Entry level multi-segment carry-forward (allineato a B_EntryLine[] indicatore)
+   // Cleanup HLINE legacy
+   if(ObjectFind(0, "RATT_ENTRY_LEVEL") >= 0) ObjectDelete(0, "RATT_ENTRY_LEVEL");
+
+   // [v2.13] toggle: skip se utente ha disabilitato entry level
+   if(InpShowEntryLine && g_dash_show_entry && ArraySize(signalTimes) > 0)
    {
-      string elName = "RATT_ENTRY_LEVEL";
-      if(ObjectFind(0, elName) >= 0) ObjectDelete(0, elName);
-      ObjectCreate(0, elName, OBJ_HLINE, 0, 0, lastEntryPrice);
-      ObjectSetInteger(0, elName, OBJPROP_COLOR, RATT_ENTRY_LEVEL_CLR);
-      ObjectSetInteger(0, elName, OBJPROP_STYLE, STYLE_DASH);
-      ObjectSetInteger(0, elName, OBJPROP_WIDTH, 1);
-      ObjectSetInteger(0, elName, OBJPROP_BACK, true);
-      ObjectSetInteger(0, elName, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, elName, OBJPROP_HIDDEN, true);
+      // Lo scan e' OLDEST→NEWEST (i=bufSize-2 a 0 con as-series=true,
+      // dove indice 0 = barra piu' recente). Quindi signalTimes[] e' gia'
+      // in ordine cronologico CRESCENTE (oldest first). Disegno diretto.
+      int sn = ArraySize(signalTimes);
+      datetime tNow = iTime(_Symbol, PERIOD_CURRENT, 0);
+      for(int k = 0; k < sn; k++)
+      {
+         datetime tStart = signalTimes[k];
+         datetime tEnd   = (k + 1 < sn) ? signalTimes[k + 1] : tNow;
+         double   price  = signalEntries[k];
+         if(tEnd <= tStart) continue;
+
+         string segName = "RATT_ENTRY_SEG_" + IntegerToString(k);
+         ObjectCreate(0, segName, OBJ_TREND, 0, tStart, price, tEnd, price);
+         ObjectSetInteger(0, segName, OBJPROP_COLOR, RATT_ENTRY_LEVEL_CLR);
+         ObjectSetInteger(0, segName, OBJPROP_STYLE, STYLE_DASH);
+         ObjectSetInteger(0, segName, OBJPROP_WIDTH, 1);
+         ObjectSetInteger(0, segName, OBJPROP_BACK, true);
+         ObjectSetInteger(0, segName, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, segName, OBJPROP_HIDDEN, true);
+         ObjectSetInteger(0, segName, OBJPROP_RAY_LEFT, false);
+         // Ultimo segmento: estendi a destra (carry-forward fino al prossimo segnale)
+         ObjectSetInteger(0, segName, OBJPROP_RAY_RIGHT, (k == sn - 1));
+      }
    }
 
    AdLogI(LOG_CAT_UI, StringFormat("DrawChannelOverlay: %d signals over %d bars (ATR Wilder)", signalCount, depth));
@@ -686,6 +728,7 @@ void CleanupOverlay()
    ObjectsDeleteAll(0, "RATT_TRIG_VL_");  // VLine trigger (legacy)
    ObjectsDeleteAll(0, "RATT_TRIG_CDL_"); // Trigger candle highlight
    ObjectsDeleteAll(0, "RATT_HSIG_");     // Historical arrows
-   ObjectDelete(0, "RATT_ENTRY_LEVEL");   // Entry level HLINE
+   ObjectDelete(0, "RATT_ENTRY_LEVEL");   // Entry level HLINE legacy
+   ObjectsDeleteAll(0, "RATT_ENTRY_SEG_"); // [v2.13] entry level multi-segment carry-forward
    g_ovlLastDepth = 0;
 }

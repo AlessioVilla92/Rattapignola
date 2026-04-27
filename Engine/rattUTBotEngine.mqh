@@ -32,31 +32,33 @@ struct UTBPreset
    int    jmaPeriod;
    int    jmaPhase;
    int    pendingExpiry;
+   ENUM_UTB_SRC_TYPE autoSrcType;   // [v2.13] sorgente auto se InpAutoSrcByTF=true
 };
 
 //+------------------------------------------------------------------+
 //| UTBot Preset Table (from UTBotAdaptive.mq5 UTBotPresetsInit)     |
 //|                                                                  |
 //|  Index:  0=M1, 1=M5, 2=M15, 3=M30, 4=H1, 5=H4                  |
-//|  Values extracted from UTBotAdaptive.mq5 lines 381-439           |
+//|  autoSrcType allineato a UTBotAdaptive-DA IMPLEMENTARE v2.13     |
 //+------------------------------------------------------------------+
 const UTBPreset g_utb_presetTable[] =
 {
-//  key   ATR  kamaN  kF  kS   hma  jmaPer  jmaPh  expiry
-   {0.7,   5,   5,   2,  20,  14,    5,      0,     3},    // M1  — ultra-scalping
-   {1.0,   7,   8,   2,  20,  14,    8,      0,     5},    // M5  — scalping intraday
-   {1.2,  10,  10,   2,  30,  14,   14,      0,     8},    // M15 — day trade (Kaufman default)
-   {1.5,  10,  10,   2,  30,  14,   18,     50,     8},    // M30 — day trade / swing intraday
-   {2.0,  14,  14,   2,  35,  14,   20,     50,    10},    // H1  — swing intraday
-   {2.5,  14,  14,   2,  40,  14,   28,     75,    12}     // H4  — swing / position
+//  key   ATR  kamaN  kF  kS   hma  jmaPer  jmaPh  expiry  autoSrc
+   {0.7,   5,   5,   2,  20,  14,    5,      0,     3,    UTB_SRC_JMA},   // M1  — ultra-scalping
+   {1.0,   7,   8,   2,  20,  14,    8,      0,     5,    UTB_SRC_KAMA},  // M5  — scalping intraday
+   {1.2,  10,  10,   2,  30,  14,   14,      0,     8,    UTB_SRC_KAMA},  // M15 — day trade (Kaufman)
+   {1.5,  10,  10,   2,  30,  14,   18,     50,     8,    UTB_SRC_JMA},   // M30 — day trade / swing
+   {2.0,  14,  14,   2,  35,  14,   20,     50,    10,    UTB_SRC_JMA},   // H1  — swing intraday
+   {2.5,  14,  14,   2,  40,  14,   28,     75,    12,    UTB_SRC_JMA}    // H4  — swing / position
 };
 
 //+------------------------------------------------------------------+
 //| Engine Global Variables (prefixed g_utb_)                         |
 //+------------------------------------------------------------------+
 
-// Handle
-int g_utb_atrHandle = INVALID_HANDLE;
+// ATR Wilder calcolato manualmente (vedi UTBCalcATRWilder/UTBWarmupATRWilder)
+// — non usiamo iATR() handle: il calcolo manuale e' identico a UTBotAdaptive
+//   indicatore (RMA seed + Wilder smoothing) e fedele al trail Pine.
 
 // Effective parameters (after preset application)
 double g_utb_keyValue  = 1.0;
@@ -67,11 +69,14 @@ int    g_utb_kamaSlow  = 30;
 int    g_utb_hmaPeriod = 14;
 int    g_utb_jmaPeriod = 14;
 int    g_utb_jmaPhase  = 0;
+ENUM_UTB_SRC_TYPE g_utb_srcEffective = UTB_SRC_JMA;  // [v2.13] sorgente effettiva (auto-TF override)
 
 // State
 double   g_utb_lastTrail   = 0;
 double   g_utb_lastSrc     = 0;
 datetime g_utb_lastBarTime = 0;
+double   g_utb_state       = 0.0;   // [v2.13] +1=LONG, -1=SHORT, 0=NEUTRO (carry-forward)
+double   g_utb_entryLevel  = 0.0;   // [v2.13] livello entry carry-forward (close trigger)
 
 // JMA internal state (bar-by-bar persistent)
 double g_utb_jma_e0   = 0;
@@ -109,7 +114,7 @@ double g_utb_atrWilder = 0.0;
 bool   g_utb_atrInit   = false;
 
 //+------------------------------------------------------------------+
-//| UTBApplyPreset — Map Period() to preset index                    |
+//| UTBGetPresetIndex — Map Period() to preset index                 |
 //+------------------------------------------------------------------+
 int UTBGetPresetIndex(ENUM_TIMEFRAMES tf)
 {
@@ -122,6 +127,29 @@ int UTBGetPresetIndex(ENUM_TIMEFRAMES tf)
       case PERIOD_H1:  return 4;
       case PERIOD_H4:  return 5;
       default:         return -1;  // No preset — use manual
+   }
+}
+
+//+------------------------------------------------------------------+
+//| UTBResolvePresetEnum — Resolve InpUTBPreset to preset table idx  |
+//|                                                                  |
+//| AUTO   → UTBGetPresetIndex(Period())                              |
+//| M1..H4 → 0..5                                                     |
+//| MANUAL → -1                                                       |
+//+------------------------------------------------------------------+
+int UTBResolvePresetEnum(ENUM_UTB_TF_PRESET preset)
+{
+   switch(preset)
+   {
+      case UTB_TF_AUTO:   return UTBGetPresetIndex((ENUM_TIMEFRAMES)Period());
+      case UTB_TF_M1:     return 0;
+      case UTB_TF_M5:     return 1;
+      case UTB_TF_M15:    return 2;
+      case UTB_TF_M30:    return 3;
+      case UTB_TF_H1:     return 4;
+      case UTB_TF_H4:     return 5;
+      case UTB_TF_MANUAL: return -1;
+      default:            return -1;
    }
 }
 
@@ -139,6 +167,7 @@ void UTBApplyPreset(const UTBPreset &p)
    g_utb_jmaPeriod = p.jmaPeriod;
    g_utb_jmaPhase  = p.jmaPhase;
    g_pendingExpiry = p.pendingExpiry;
+   g_utb_srcEffective = InpAutoSrcByTF ? p.autoSrcType : InpSrcType;
 }
 
 //+------------------------------------------------------------------+
@@ -155,6 +184,54 @@ void UTBApplyManual()
    g_utb_jmaPeriod = InpJMA_Period;
    g_utb_jmaPhase  = InpJMA_Phase;
    g_pendingExpiry = PendingExpiryBars;
+   g_utb_srcEffective = InpSrcType;
+}
+
+//+------------------------------------------------------------------+
+//| UTBApplyKamaPreset — Override KAMA params from KamaPreset enum   |
+//|                                                                  |
+//| Allineato a UTBotAdaptive-DA IMPLEMENTARE v2.13 righe 663-714.   |
+//| AUTO     → presetIdx M1/M5: STANDARD (10,2,30); M15+: MIDDLE     |
+//| STANDARD → (10, 2, 30)  Kaufman classico reattivo                |
+//| MIDDLE   → (14, 4, 50)  anti-microstorno (raccomandato M15)      |
+//| SLOW     → (20, 6, 80)  swing filter H1/H4                       |
+//| MANUAL   → no-op (mantiene valori da UTBApplyPreset/Manual)      |
+//|                                                                  |
+//| presetIdx: indice tabella TF (0=M1..5=H4, -1=manual TF).         |
+//+------------------------------------------------------------------+
+void UTBApplyKamaPreset(int presetIdx)
+{
+   ENUM_KAMA_PRESET sel = InpKamaPreset;
+
+   if(sel == KAMA_PRESET_AUTO)
+   {
+      // M1/M5 → STANDARD; M15+ → MIDDLE
+      if(presetIdx >= 0 && presetIdx <= 1) sel = KAMA_PRESET_STANDARD;
+      else                                  sel = KAMA_PRESET_MIDDLE;
+   }
+
+   switch(sel)
+   {
+      case KAMA_PRESET_STANDARD:
+         g_utb_kamaN    = 10;
+         g_utb_kamaFast = 2;
+         g_utb_kamaSlow = 30;
+         break;
+      case KAMA_PRESET_MIDDLE:
+         g_utb_kamaN    = 14;
+         g_utb_kamaFast = 4;
+         g_utb_kamaSlow = 50;
+         break;
+      case KAMA_PRESET_SLOW:
+         g_utb_kamaN    = 20;
+         g_utb_kamaFast = 6;
+         g_utb_kamaSlow = 80;
+         break;
+      case KAMA_PRESET_MANUAL:
+      default:
+         // No-op
+         break;
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -220,57 +297,6 @@ void UTBResetJMAState()
    ArrayInitialize(g_utb_jma_det0,  0);
    ArrayInitialize(g_utb_jma_det1,  0);
    ArrayInitialize(g_utb_jma_src_arr, 0);
-}
-
-//+------------------------------------------------------------------+
-//| UTBWarmupJMA — Pre-warm JMA state on historical closes           |
-//|                                                                  |
-//| Riempie lo stato persistente (8 array + scalari) iterando        |
-//| UTBCalcJMA su `bars` chiusure storiche, dalla piu' vecchia alla  |
-//| piu' recente. Necessario al boot e dopo recovery: la JMA         |
-//| richiede ~100+ barre per convergere; senza warmup i primi        |
-//| segnali post-restart sono falsi finche' lo stato non si stabilizza.|
-//|                                                                  |
-//| Sicuro da chiamare anche su fresh start: lo stato e' gia' resettato|
-//| da UTBResetJMAState e g_utb_jma_init=false al primo UTBCalcJMA.  |
-//+------------------------------------------------------------------+
-void UTBWarmupJMA(int bars = 200)
-{
-   if(bars < 10) bars = 10;
-   if(bars > g_utb_jma_histMax) bars = g_utb_jma_histMax;
-
-   int totalBars = iBars(_Symbol, PERIOD_CURRENT);
-   if(totalBars < 5)
-   {
-      AdLogW(LOG_CAT_UTB, StringFormat("JMA warmup skipped — only %d bars available", totalBars));
-      return;
-   }
-   if(bars > totalBars - 1) bars = totalBars - 1;
-
-   // CopyClose: shift 1 = bar[1] (anti-repaint), `bars` chiusure storiche.
-   // Indice 0 = bar piu' vecchia, indice bars-1 = bar[1] piu' recente.
-   double closes[];
-   ArraySetAsSeries(closes, false);
-   int copied = CopyClose(_Symbol, PERIOD_CURRENT, 1, bars, closes);
-   if(copied < bars)
-   {
-      AdLogW(LOG_CAT_UTB, StringFormat("JMA warmup: only %d/%d closes copied", copied, bars));
-      if(copied < 10) return;
-   }
-
-   // UTBCalcJMA legge solo close[1] (accesso diretto, non serve as-series).
-   // Array statico: MQL5 non permette ArraySetAsSeries su buffer fissi.
-   double tmp[3];
-   tmp[0] = 0; tmp[2] = 0;
-
-   for(int i = 0; i < copied; i++)
-   {
-      tmp[1] = closes[i];
-      UTBCalcJMA(tmp, 3);
-   }
-
-   AdLogI(LOG_CAT_UTB, StringFormat("JMA warmup: %d bars processed | histLen=%d",
-          copied, g_utb_jma_histLen));
 }
 
 //+------------------------------------------------------------------+
@@ -523,12 +549,21 @@ double UTBCalcJMA(const double &close[], int count)
 //+------------------------------------------------------------------+
 //| UTBCalcER — Efficiency Ratio for bar[1]                          |
 //|                                                                  |
-//| KAMA source: exact ER = |close[1]-close[1+N]| / sum|diffs|      |
-//| Other sources: proxy ER = min(1.0, |src-src_prev| / atr)        |
+//| [v2.13] Modalita' uniforme (InpERKaufmanUniform=true):           |
+//|   ER Kaufman autentico su close[] finestra g_utb_kamaN per       |
+//|   TUTTE le sorgenti — scala 0..1 coerente cross-source.          |
+//|                                                                  |
+//| Modalita' legacy (InpERKaufmanUniform=false):                    |
+//|   KAMA source  → ER Kaufman autentico                            |
+//|   Other source → proxy min(1, |src-src_prev|/atr)                |
+//|                                                                  |
+//| Allineato a UTBotAdaptive-DA IMPLEMENTARE v2.13 righe 1657-1683. |
 //+------------------------------------------------------------------+
 double UTBCalcER(const double &close[], int count, double src, double src_prev, double atr)
 {
-   if(InpSrcType == UTB_SRC_KAMA && count >= g_utb_kamaN + 2)
+   bool useKaufman = InpERKaufmanUniform || (g_utb_srcEffective == UTB_SRC_KAMA);
+
+   if(useKaufman && count >= g_utb_kamaN + 2)
    {
       double d = MathAbs(close[1] - close[1 + g_utb_kamaN]);
       double n = 0.0;
@@ -650,11 +685,14 @@ void UTBWarmupEngine(int bars = 500)
    if(copied < 50) return;
    bars = copied;
 
+   // tmp[] e' un buffer fisso passato a UTBCalcJMA che legge solo tmp[1].
+   // ArraySetAsSeries non e' applicabile (e non serve) su array statici.
    double tmp[3];
-   ArraySetAsSeries(tmp, true);
    tmp[0] = 0; tmp[2] = 0;
 
    double trail = 0, src = 0, src_prev = 0;
+   double state = 0.0;
+   double entry = 0.0;
 
    for(int i = 0; i < bars; i++)
    {
@@ -662,7 +700,7 @@ void UTBWarmupEngine(int bars = 500)
       tmp[1] = close_i;
 
       double curSrc = close_i;
-      switch(InpSrcType)
+      switch(g_utb_srcEffective)
       {
          case UTB_SRC_CLOSE:
             curSrc = close_i;
@@ -717,13 +755,23 @@ void UTBWarmupEngine(int bars = 500)
          trail = src - nLoss;
       else
          trail = src + nLoss;
+
+      // [v2.13] Track state + entryLevel during warmup
+      bool wIsBuy  = (src_prev < trail_prev) && (src > trail);
+      bool wIsSell = (src_prev > trail_prev) && (src < trail);
+      if(wIsBuy)       { state = +1.0; entry = close_i; }
+      else if(wIsSell) { state = -1.0; entry = close_i; }
    }
 
-   g_utb_lastTrail = trail;
-   g_utb_lastSrc   = src;
+   g_utb_lastTrail   = trail;
+   g_utb_lastSrc     = src;
+   g_utb_state       = state;
+   g_utb_entryLevel  = entry;
 
-   AdLogI(LOG_CAT_UTB, StringFormat("WarmupEngine: %d bars | Trail=%.5f | Src=%.5f | Side=%s",
-          bars, trail, src, (src > trail) ? "BULL" : "BEAR"));
+   AdLogI(LOG_CAT_UTB, StringFormat("WarmupEngine: %d bars | Trail=%.5f | Src=%.5f | State=%s | Entry=%.5f",
+          bars, trail, src,
+          (state > 0 ? "LONG" : (state < 0 ? "SHORT" : "NEUTRO")),
+          entry));
 }
 
 //+------------------------------------------------------------------+
@@ -739,40 +787,34 @@ void UTBWarmupEngine(int bars = 500)
 bool EngineInit()
 {
    //--- 1. Apply preset ---
-   if(InpUTBPreset == UTB_TF_AUTO)
+   int presetIdx = UTBResolvePresetEnum(InpUTBPreset);
+   if(presetIdx >= 0 && presetIdx < ArraySize(g_utb_presetTable))
    {
-      int idx = UTBGetPresetIndex((ENUM_TIMEFRAMES)Period());
-      if(idx >= 0 && idx < ArraySize(g_utb_presetTable))
-      {
-         UTBApplyPreset(g_utb_presetTable[idx]);
-         AdLogI(LOG_CAT_UTB, StringFormat("Auto-preset applied: TF=%s idx=%d Key=%.1f ATR=%d",
-                EnumToString((ENUM_TIMEFRAMES)Period()), idx,
-                g_utb_keyValue, g_utb_atrPeriod));
-      }
-      else
-      {
-         // Fallback to manual for unsupported TFs (D1, W1, etc.)
-         UTBApplyManual();
-         AdLogW(LOG_CAT_UTB, StringFormat("No preset for TF=%s — using manual params",
-                EnumToString((ENUM_TIMEFRAMES)Period())));
-      }
+      UTBApplyPreset(g_utb_presetTable[presetIdx]);
+      AdLogI(LOG_CAT_UTB, StringFormat("Preset applied: %s idx=%d Key=%.1f ATR=%d",
+             EnumToString(InpUTBPreset), presetIdx,
+             g_utb_keyValue, g_utb_atrPeriod));
    }
-   else  // UTB_TF_MANUAL
+   else if(InpUTBPreset == UTB_TF_MANUAL)
    {
       UTBApplyManual();
       AdLogI(LOG_CAT_UTB, "Manual mode — using input parameters directly");
    }
-
-   //--- 2. Create ATR handle ---
-   g_utb_atrHandle = iATR(_Symbol, PERIOD_CURRENT, g_utb_atrPeriod);
-   if(g_utb_atrHandle == INVALID_HANDLE)
+   else
    {
-      AdLogE(LOG_CAT_UTB, StringFormat("CRITICAL: Failed to create ATR handle (period=%d)", g_utb_atrPeriod));
-      return false;
+      // AUTO con TF non supportato (D1, W1, etc.)
+      UTBApplyManual();
+      AdLogW(LOG_CAT_UTB, StringFormat("No preset for TF=%s — using manual params",
+             EnumToString((ENUM_TIMEFRAMES)Period())));
    }
 
-   //--- 3. Pre-calculate JMA constants ---
-   if(InpSrcType == UTB_SRC_JMA)
+   //--- 1b. Apply KAMA preset (override after TF preset) ---
+   UTBApplyKamaPreset(presetIdx);
+
+   //--- 2. ATR Wilder: nessun handle iATR (calcolo manuale fedele all'indicatore) ---
+
+   //--- 3. Pre-calculate JMA constants (use effective source) ---
+   if(g_utb_srcEffective == UTB_SRC_JMA)
    {
       UTBInitJMAConstants();
       UTBResetJMAState();
@@ -783,9 +825,9 @@ bool EngineInit()
    //--- 3b. Warmup ATR Wilder (identico all'indicatore riga 1283) ---
    UTBWarmupATRWilder(500);
 
-   //--- 3c. Warmup engine completo: sorgente + trail ---
-   // Questo sostituisce il vecchio UTBWarmupJMA(200) e aggiunge il calcolo
-   // trail stop durante il warmup. Al termine g_utb_lastTrail e g_utb_lastSrc
+   //--- 3c. Warmup engine completo: sorgente + trail + state ---
+   // Scalda 500 barre storiche calcolando JMA/KAMA/HMA + ATR + trail
+   // contemporaneamente. Al termine g_utb_lastTrail/lastSrc/state/entryLevel
    // contengono i valori storici corretti — niente piu' "trail=0 guess bullish".
    UTBWarmupEngine(500);
 
@@ -815,7 +857,7 @@ bool EngineInit()
 
    //--- Log configuration ---
    string srcStr;
-   switch(InpSrcType)
+   switch(g_utb_srcEffective)
    {
       case UTB_SRC_CLOSE: srcStr = "Close";  break;
       case UTB_SRC_HMA:   srcStr = StringFormat("HMA(%d)", g_utb_hmaPeriod); break;
@@ -824,8 +866,11 @@ bool EngineInit()
       default:             srcStr = "?"; break;
    }
 
-   AdLogI(LOG_CAT_UTB, StringFormat("UTBot Engine: Key=%.1f ATR=%d Src=%s",
-          g_utb_keyValue, g_utb_atrPeriod, srcStr));
+   AdLogI(LOG_CAT_UTB, StringFormat("UTBot v2.13 | TFPreset=%s | KAMAPreset=%s | Src=%s | Key=%.1f | ATR=%d | AutoSrcByTF=%s | ERUniform=%s",
+          EnumToString(InpUTBPreset), EnumToString(InpKamaPreset), srcStr,
+          g_utb_keyValue, g_utb_atrPeriod,
+          InpAutoSrcByTF ? "YES" : "NO",
+          InpERKaufmanUniform ? "YES" : "NO"));
    AdLogI(LOG_CAT_UTB, StringFormat("ER Thresholds: Strong=%.2f Weak=%.2f ShowWeak=%s",
           InpERStrong, InpERWeak, InpShowWeakSig ? "YES" : "NO"));
    AdLogI(LOG_CAT_UTB, StringFormat("TP Mode=%s Value=%.1f Entry=%s PendExpiry=%d",
@@ -840,13 +885,7 @@ bool EngineInit()
 //+------------------------------------------------------------------+
 void EngineDeinit()
 {
-   //--- Release ATR handle ---
-   if(g_utb_atrHandle != INVALID_HANDLE)
-   {
-      if(!IndicatorRelease(g_utb_atrHandle))
-         AdLogW(LOG_CAT_UTB, StringFormat("Engine ATR IndicatorRelease failed (err=%d)", GetLastError()));
-      g_utb_atrHandle = INVALID_HANDLE;
-   }
+   //--- ATR Wilder: nessun handle da rilasciare (calcolo manuale) ---
 
    //--- Release SQZ handle ---
    if(g_sqzHandle != INVALID_HANDLE)
@@ -860,12 +899,14 @@ void EngineDeinit()
    g_utb_lastTrail   = 0;
    g_utb_lastSrc     = 0;
    g_utb_lastBarTime = 0;
+   g_utb_state       = 0.0;
+   g_utb_entryLevel  = 0.0;
    g_utb_kama_prev   = 0;
    g_utb_kama_init   = false;
    g_utb_atrWilder   = 0;
    g_utb_atrInit     = false;
 
-   if(InpSrcType == UTB_SRC_JMA)
+   if(g_utb_srcEffective == UTB_SRC_JMA)
       UTBResetJMAState();
 
    AdLogI(LOG_CAT_UTB, "UTBot Engine deinitialized");
@@ -906,16 +947,20 @@ bool EngineCalculate(EngineSignal &sig)
 
    // ================================================================
    // STEP 2: Calculate Adaptive Source on bar[1]
+   // [v2.13] usa g_utb_srcEffective (auto-TF override)
    // ================================================================
    // Determine how many close values we need
    int closeLookback = 2;  // Minimum: bar[1] and bar[2]
-   switch(InpSrcType)
+   switch(g_utb_srcEffective)
    {
       case UTB_SRC_CLOSE: closeLookback = 3; break;
       case UTB_SRC_HMA:   closeLookback = g_utb_hmaPeriod * 2 + 10; break;
       case UTB_SRC_KAMA:  closeLookback = g_utb_kamaN + 5; break;
       case UTB_SRC_JMA:   closeLookback = 3; break;  // JMA is recursive, needs only current
    }
+   // [v2.13] ER Kaufman uniforme richiede almeno kamaN+2 close per qualunque sorgente
+   if(InpERKaufmanUniform)
+      closeLookback = MathMax(closeLookback, g_utb_kamaN + 2);
 
    double closeArr[];
    ArraySetAsSeries(closeArr, true);
@@ -927,7 +972,7 @@ bool EngineCalculate(EngineSignal &sig)
    }
 
    double src = 0;
-   switch(InpSrcType)
+   switch(g_utb_srcEffective)
    {
       case UTB_SRC_CLOSE:
          src = closeArr[1];
@@ -986,10 +1031,11 @@ bool EngineCalculate(EngineSignal &sig)
 
    // ================================================================
    // STEP 4: Signal Detection (crossover)
-   // From UTBotAdaptive.mq5 lines 1422-1423
+   // [v2.13] formula allineata a UTBotAdaptive-DA IMPLEMENTARE righe 1696-1697.
+   // Fallback src_prev==0 rimosso: warmup engine garantisce src_prev valido.
    // ================================================================
-   bool isBuy  = (src_prev < trail_prev || src_prev == 0) && (src > trail) && trail_prev != 0;
-   bool isSell = (src_prev > trail_prev || src_prev == 0) && (src < trail) && trail_prev != 0;
+   bool isBuy  = (trail_prev != 0) && (src_prev < trail_prev) && (src > trail);
+   bool isSell = (trail_prev != 0) && (src_prev > trail_prev) && (src < trail);
 
    // ================================================================
    // STEP 5: Efficiency Ratio + quality classification
@@ -1026,11 +1072,25 @@ bool EngineCalculate(EngineSignal &sig)
    }
 
    // ================================================================
-   // STEP 7: Update state
+   // STEP 7: Update state (trail + src + bar time + state badge + entryLevel)
+   // [v2.13] state e entryLevel carry-forward per dashboard e UI.
    // ================================================================
    g_utb_lastTrail   = trail;
    g_utb_lastSrc     = src;
    g_utb_lastBarTime = barTime;
+
+   // [v2.13] State badge + entryLevel carry-forward (allineato a B_State + B_EntryLine indicatore)
+   if(isBuy)
+   {
+      g_utb_state      = +1.0;
+      g_utb_entryLevel = iClose(_Symbol, PERIOD_CURRENT, 1);
+   }
+   else if(isSell)
+   {
+      g_utb_state      = -1.0;
+      g_utb_entryLevel = iClose(_Symbol, PERIOD_CURRENT, 1);
+   }
+   // else: state e entryLevel rimangono ai valori precedenti (carry-forward)
 
    // ================================================================
    // STEP 8: Populate EngineSignal
@@ -1046,12 +1106,15 @@ bool EngineCalculate(EngineSignal &sig)
    sig.barTime         = barTime;
 
    // --- Extra values for dashboard ---
-   sig.extraValues[0] = PointsToPips(atr);    sig.extraLabels[0] = "ATR";
-   sig.extraValues[1] = er;                    sig.extraLabels[1] = "ER";
-   sig.extraValues[2] = trail;                 sig.extraLabels[2] = "Trail";
-   sig.extraValues[3] = g_utb_keyValue;        sig.extraLabels[3] = "Key";
-   sig.extraValues[4] = src;                   sig.extraLabels[4] = "Source";
-   sig.extraCount     = 5;
+   sig.extraValues[0] = PointsToPips(atr);              sig.extraLabels[0] = "ATR";
+   sig.extraValues[1] = er;                              sig.extraLabels[1] = "ER";
+   sig.extraValues[2] = trail;                           sig.extraLabels[2] = "Trail";
+   sig.extraValues[3] = g_utb_keyValue;                  sig.extraLabels[3] = "Key";
+   sig.extraValues[4] = src;                             sig.extraLabels[4] = "Source";
+   sig.extraValues[5] = g_utb_state;                     sig.extraLabels[5] = "State";
+   sig.extraValues[6] = g_utb_entryLevel;                sig.extraLabels[6] = "EntryLvl";
+   sig.extraValues[7] = (double)g_utb_srcEffective;      sig.extraLabels[7] = "SrcEff";
+   sig.extraCount     = 8;
 
    // --- Filter states for dashboard ---
    sig.filterNames[0]  = "ER";

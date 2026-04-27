@@ -183,10 +183,12 @@ input int                InpATRPeriod_UTB = 10;            // ATR Period
 // E2. SORGENTE ADATTIVA
 input group "    ⚙️ E2. SORGENTE ADATTIVA"
 input ENUM_UTB_SRC_TYPE  InpSrcType       = UTB_SRC_JMA;  // Tipo sorgente
+input bool               InpAutoSrcByTF   = false;         // [v2.13] Auto-source per TF (M5/M15→KAMA, altri→JMA)
+input ENUM_KAMA_PRESET   InpKamaPreset    = KAMA_PRESET_MANUAL; // [v2.13] Preset KAMA (AUTO/STANDARD/MIDDLE/SLOW/MANUAL)
 input int                InpHMAPeriod     = 14;            // HMA Period
-input int                InpKAMA_N        = 10;            // KAMA ER Period
-input int                InpKAMA_Fast     = 2;             // KAMA Fast EMA
-input int                InpKAMA_Slow     = 30;            // KAMA Slow EMA
+input int                InpKAMA_N        = 10;            // KAMA ER Period (solo MANUAL)
+input int                InpKAMA_Fast     = 2;             // KAMA Fast EMA (solo MANUAL)
+input int                InpKAMA_Slow     = 30;            // KAMA Slow EMA (solo MANUAL)
 input int                InpJMA_Period    = 14;            // JMA Period
 input int                InpJMA_Phase     = 0;             // JMA Phase -100..100
 
@@ -195,6 +197,13 @@ input group "    ⚙️ E3. QUALITA' SEGNALE (ER)"
 input double             InpERStrong      = 0.35;          // ER soglia TBS (forte)
 input double             InpERWeak        = 0.15;          // ER soglia minima (sotto = skip)
 input bool               InpShowWeakSig   = true;          // Mostra segnali deboli (ER<0.35)
+input bool               InpERKaufmanUniform = true;       // [v2.13] ER Kaufman uniforme (true=fix bug, false=v2.01 legacy)
+
+// E5. STILE FRECCE & ENTRY LEVEL [v2.13]
+input group "    🎨 E5. STILE FRECCE & ENTRY LEVEL"
+input bool               InpMonochromeArrows = false;      // [v2.13] Frecce sempre direzionali (false=2 toni ER, true=mono)
+input bool               InpShowEntryLine    = true;       // [v2.13] Linea entry level viola DASH (carry-forward)
+input bool               InpApplyTheme       = false;      // [v2.13 opt-in] Applica tema scuro chart (navy+teal) al boot
 
 // E4. SQUEEZE MOMENTUM EXIT (secondario)
 input group "    📊 E4. SQUEEZE MOMENTUM EXIT (secondario)"
@@ -226,8 +235,6 @@ input double HsTriggerPct           = 0.30;    // 📏 Trigger: banda ± X% chan
 input group "    🚪 EXIT CONDITIONS"
 input int    HsAntiWhipsawBars      = 3;       // ⏱️ Min barre prima di exit su segnale UTBot
 // ↑ Anti-whipsaw: ignora segnali nelle prime N barre dall'attivazione HS
-
-input bool   HsCloseOnSoupProfit    = false;   // [DEPRECATED v1.7.2] Sostituito da HsCleanup in MonitorActive
 
 input int    HsTimeoutBars          = 32;      // ⏱️ Timeout barre (0 = disattivato, 32 = 8h su M15)
 // ↑ Se HS rimane aperto per N barre, chiudi a mercato. 0 = nessun timeout.

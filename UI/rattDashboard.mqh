@@ -106,6 +106,140 @@ void DashStatusBox(string id, int x, int y, color clr)
    DashRectangle("SB_" + id, x, y, 8, 8, clr, clr);
 }
 
+//+------------------------------------------------------------------+
+//| DashStateBadge — [v2.13] Badge LONG/SHORT/NEUTRO basato su state |
+//|                                                                  |
+//| state: +1 = LONG (teal), -1 = SHORT (coral), 0 = NEUTRO (mid)    |
+//+------------------------------------------------------------------+
+void DashStateBadge(string id, int x, int y, int w, int h, double state)
+{
+   color bg, txtClr;
+   string label;
+   if(state > 0.5)       { label = "LONG  " + ShortToString(0x25B2);  bg = RATT_BUY;        txtClr = clrWhite; }
+   else if(state < -0.5) { label = "SHORT " + ShortToString(0x25BC);  bg = RATT_SELL;       txtClr = clrWhite; }
+   else                  { label = "NEUTRO " + ShortToString(0x2014); bg = RATT_TEXT_MUTED; txtClr = clrWhite; }
+
+   DashRectangle("BADGE_" + id, x, y, w, h, bg, bg);
+   // Testo centrato approx — usa font ridotto per stare nel badge
+   int textX = x + 6;
+   int textY = y + (h - 11) / 2;
+   DashLabel("BADGE_TXT_" + id, textX, textY, label, txtClr, 9, RATT_FONT_SECTION);
+}
+
+//+------------------------------------------------------------------+
+//| DashERBarFill — [v2.13] Track + fill grafico per ER 0..1         |
+//|                                                                  |
+//| Track grigio, fill colorato proporzionale al valore ER.          |
+//| Colore fill: verde >=0.60, ambra 0.35..0.59, dim <0.35.          |
+//+------------------------------------------------------------------+
+void DashERBarFill(string id, int x, int y, int wMax, int h, double er)
+{
+   if(er < 0) er = 0; if(er > 1) er = 1;
+
+   color fillClr;
+   if(er >= 0.60)      fillClr = RATT_BUY;
+   else if(er >= 0.35) fillClr = RATT_AMBER;
+   else                fillClr = RATT_TEXT_MUTED;
+
+   // Track (sempre largo wMax)
+   DashRectangle("ERBAR_TRK_" + id, x, y, wMax, h, RATT_BG_DEEP, RATT_PANEL_BORDER);
+   // Fill proporzionale (almeno 1px se er>0)
+   int wFill = (int)MathRound(er * (double)wMax);
+   if(er > 0.0 && wFill < 1) wFill = 1;
+   if(wFill > 0)
+      DashRectangle("ERBAR_FIL_" + id, x, y, wFill, h, fillClr, fillClr);
+   else
+   {
+      // cleanup fill se ER=0
+      if(ObjectFind(0, "RATT_ERBAR_FIL_" + id) >= 0)
+         ObjectDelete(0, "RATT_ERBAR_FIL_" + id);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| DashToggleButton — [v2.13] OBJ_BUTTON 38x14px ON/OFF             |
+//|                                                                  |
+//| Stato visivo: teal+bianco se ON, dim+gray se OFF.                |
+//| Naming: RATT_DASH_TGL_<id> (distinto da RATT_DASH_BTN_*).        |
+//+------------------------------------------------------------------+
+void DashToggleButton(string id, int x, int y, int w, int h, bool isOn, string label)
+{
+   string name = "RATT_DASH_TGL_" + id;
+   color bg = isOn ? RATT_FIREFLY : RATT_BG_SECTION_B;
+   color tx = isOn ? clrWhite      : RATT_TEXT_MUTED;
+
+   if(ObjectFind(0, name) < 0)
+   {
+      ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, RATT_PANEL_BORDER);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, name, OBJPROP_ZORDER, RATT_Z_LABEL + 5);
+      ObjectSetString(0, name, OBJPROP_FONT, RATT_FONT_BODY);
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 7);
+   }
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, tx);
+   ObjectSetInteger(0, name, OBJPROP_STATE, false);   // Mantieni in "rilasciato" — usiamo il bg per lo stato
+   ObjectSetString(0, name, OBJPROP_TEXT, label);
+}
+
+//+------------------------------------------------------------------+
+//| HandleEngineToggle — [v2.13] dispatcher click toggle button      |
+//|                                                                  |
+//| Chiamata da OnChartEvent in Rattapignola.mq5 (CHARTEVENT_OBJECT_ |
+//| CLICK). Toggle dei flag g_dash_show_* + cleanup oggetti chart    |
+//| del prefisso corrispondente. Il redraw avverra' al prossimo      |
+//| tick OnTick (DrawChannelOverlay rispetta i flag).                 |
+//+------------------------------------------------------------------+
+void HandleEngineToggle(const string sparam)
+{
+   if(StringFind(sparam, "RATT_DASH_TGL_") != 0) return;
+
+   string id = StringSubstr(sparam, StringLen("RATT_DASH_TGL_"));
+
+   if(id == "TRAIL")
+   {
+      g_dash_show_trail = !g_dash_show_trail;
+      if(!g_dash_show_trail) ObjectsDeleteAll(0, "RATT_OVL_");
+   }
+   else if(id == "ARROWS")
+   {
+      g_dash_show_arrows = !g_dash_show_arrows;
+      if(!g_dash_show_arrows) ObjectsDeleteAll(0, "RATT_HSIG_");
+   }
+   else if(id == "ENTRY")
+   {
+      g_dash_show_entry = !g_dash_show_entry;
+      if(!g_dash_show_entry)
+      {
+         ObjectsDeleteAll(0, "RATT_ENTRY_SEG_");
+         ObjectDelete(0, "RATT_ENTRY_LEVEL");
+      }
+   }
+   else if(id == "CANDLES")
+   {
+      g_dash_show_candles = !g_dash_show_candles;
+      if(!g_dash_show_candles) ObjectsDeleteAll(0, "RATT_TCOL_");
+   }
+   else
+   {
+      return;   // non e' un nostro toggle
+   }
+
+   // Reset state button (MT5 lascia premuto dopo click)
+   ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
+
+   // Trigger redraw immediato per restore degli oggetti se ON
+   if(g_engineReady) DrawChannelOverlay();
+   ChartRedraw();
+}
+
 // ApplyChartTheme() definita in rattVisualTheme.mqh
 
 //+------------------------------------------------------------------+
@@ -146,9 +280,13 @@ void DrawModePanel(int x, int y, int w)
    DashLabel("M_SPREAD", x + pad + 220, y + 7, StringFormat("Spread:%.1f", GetSpreadPips()), RATT_TEXT_MUTED, 8);
 
    // Riga 2: TF + TP Mode + State
-   string tfBadge = "UTBot v2.01";
+   string tfBadge = "UTBot v2.13";
    if(InpUTBPreset == UTB_TF_AUTO)
-      tfBadge += " " + EnumToString(Period());
+      tfBadge += " AUTO " + EnumToString(Period());
+   else if(InpUTBPreset == UTB_TF_MANUAL)
+      tfBadge += " MANUAL";
+   else
+      tfBadge += " " + EnumToString(InpUTBPreset);
    DashLabel("M_TF", x + pad, y + 22, tfBadge, RATT_FIREFLY_DIM, 8);
 
    // TP Mode
@@ -175,7 +313,13 @@ void DrawModePanel(int x, int y, int w)
 }
 
 //+------------------------------------------------------------------+
-//| DrawEnginePanel — UTBot Engine details (345px, left column)      |
+//| DrawEnginePanel — UTBot Engine details v2.13                     |
+//|                                                                  |
+//| Layout (178px tot):                                              |
+//|   y+6   Title + status box                                       |
+//|   y+24  State badge (LONG/SHORT/NEUTRO) — usa extraValues[5]     |
+//|   y+44..y+124  Trail/Src/ER+bar/Key/ATR/Config (legacy)          |
+//|   y+138..y+158  Toggle row: T A E C (Trail/Arrows/Entry/Candles) |
 //+------------------------------------------------------------------+
 void DrawEnginePanel(int x, int y, int w)
 {
@@ -183,7 +327,7 @@ void DrawEnginePanel(int x, int y, int w)
    DashRectangle("ENG_PANEL", x, y, w, RATT_H_ENGINE, RATT_BG_ENGINE, RATT_PANEL_BORDER);
 
    // Title + status box
-   DashLabel("ENG_TITLE", x + pad, y + 6, "UTBOT ENGINE", RATT_FIREFLY, 10, RATT_FONT_SECTION);
+   DashLabel("ENG_TITLE", x + pad, y + 6, "UTBOT ENGINE v2.13", RATT_FIREFLY, 10, RATT_FONT_SECTION);
    color engStClr = g_engineReady ? RATT_BUY : RATT_AMBER;
    DashStatusBox("ENG_ST", x + w - 70, y + 9, engStClr);
    DashLabel("ENG_STXT", x + w - 58, y + 6,
@@ -191,81 +335,103 @@ void DrawEnginePanel(int x, int y, int w)
 
    if(g_lastSignal.upperBand > 0)
    {
-      int ly = y + 26;
-      int lh = 16;
+      // [v2.13] State badge usando extraValues[5] (popolato dall'engine)
+      double stateVal = g_lastSignal.extraValues[5];
+      DashStateBadge("ENG", x + pad, y + 24, 110, 18, stateVal);
+
+      int ly = y + 48;
+      int lh = 14;
       int valX = x + pad + 90;
 
-      // Trail Stop (bandLevel = trail effettivo; upperBand = src + nLoss = banda superiore)
+      // Trail Stop
       DashLabel("ENG_L1", x + pad, ly, "Trail Stop", RATT_TEXT_MID, 8);
       DashLabel("ENG_V1", valX, ly,
                 DoubleToString(g_lastSignal.bandLevel, _Digits), RATT_SELL, 8);
       ly += lh;
 
-      // Source
+      // Source value
       DashLabel("ENG_L2", x + pad, ly, "Source", RATT_TEXT_MID, 8);
       DashLabel("ENG_V2", valX, ly,
                 DoubleToString(g_lastSignal.midline, _Digits), RATT_FIREFLY, 8);
       ly += lh;
 
-      // ER
+      // ER + bar grafica + qualita' (su 2 righe compresse)
       double erVal = g_lastSignal.extraValues[1];
       DashLabel("ENG_L3", x + pad, ly, "ER", RATT_TEXT_MID, 8);
       DashLabel("ENG_V3", valX, ly,
                 StringFormat("%.3f", erVal), RATT_TEXT_SECONDARY, 8);
+      // ER bar grafica accanto al valore (110px di width track)
+      DashERBarFill("ENG", valX + 40, ly + 3, 80, 6, erVal);
       ly += lh;
 
-      // ER Quality
+      // Key/ATR + ER Quality compatti su una riga
       string erStr = "---";
       color erClr = RATT_TEXT_MUTED;
       if(erVal >= InpERStrong)      { erStr = "Strong";   erClr = RATT_BUY; }
       else if(erVal >= InpERWeak)   { erStr = "Moderate"; erClr = RATT_AMBER; }
       else                          { erStr = "Weak";     erClr = RATT_SELL; }
-      DashLabel("ENG_L4", x + pad, ly, "ER Quality", RATT_TEXT_MID, 8);
+      DashLabel("ENG_L4", x + pad, ly,
+                StringFormat("Key %.1f | ATR(%d)", g_utb_keyValue, g_utb_atrPeriod),
+                RATT_TEXT_MID, 8);
       DashLabel("ENG_V4", valX, ly, erStr, erClr, 8, RATT_FONT_SECTION);
       ly += lh;
 
-      // Key Value
-      DashLabel("ENG_L5", x + pad, ly, "Key Value", RATT_TEXT_MID, 8);
+      // ATR pip + entry level
+      double entryLvl = g_lastSignal.extraValues[6];
+      DashLabel("ENG_L5", x + pad, ly,
+                StringFormat("ATR %.1f pip", g_lastSignal.channelWidthPip), RATT_AMBER, 8);
       DashLabel("ENG_V5", valX, ly,
-                StringFormat("%.1f", g_utb_keyValue), RATT_FIREFLY, 8);
+                entryLvl > 0 ? "Entry " + DoubleToString(entryLvl, _Digits) : " ",
+                RATT_ENTRY_LEVEL_CLR, 8);
       ly += lh;
 
-      // ATR
-      DashLabel("ENG_L6", x + pad, ly, StringFormat("ATR(%d)", g_utb_atrPeriod), RATT_TEXT_MID, 8);
-      DashLabel("ENG_V6", valX, ly,
-                StringFormat("%.1f pip", g_lastSignal.channelWidthPip), RATT_AMBER, 8);
-      ly += lh;
-
-      // Config
-      // Sorgente adattiva dinamica (non hardcoded JMA)
+      // Config: sorgente effettiva (post-Auto-Source TF se attivo) + KAMA preset
       string srcName = "Close";
-      switch(InpSrcType)
+      switch(g_utb_srcEffective)
       {
-         case UTB_SRC_JMA:   srcName = "JMA";   break;
-         case UTB_SRC_KAMA:  srcName = "KAMA";  break;
-         case UTB_SRC_HMA:   srcName = "HMA";   break;
+         case UTB_SRC_JMA:   srcName = StringFormat("JMA(%d,%d)", g_utb_jmaPeriod, g_utb_jmaPhase); break;
+         case UTB_SRC_KAMA:  srcName = StringFormat("KAMA(%d,%d,%d)", g_utb_kamaN, g_utb_kamaFast, g_utb_kamaSlow); break;
+         case UTB_SRC_HMA:   srcName = StringFormat("HMA(%d)", g_utb_hmaPeriod); break;
          case UTB_SRC_CLOSE: srcName = "Close"; break;
       }
+      string kamaStr = (InpKamaPreset == KAMA_PRESET_AUTO)     ? "AUTO"
+                     : (InpKamaPreset == KAMA_PRESET_STANDARD) ? "STD"
+                     : (InpKamaPreset == KAMA_PRESET_MIDDLE)   ? "MID"
+                     : (InpKamaPreset == KAMA_PRESET_SLOW)     ? "SLW"
+                                                                : "MAN";
       DashLabel("ENG_CFG", x + pad, ly,
-                StringFormat("Key:%.1f | ATR:%d | Src:%s", g_utb_keyValue, g_utb_atrPeriod, srcName),
+                StringFormat("Src:%s | KAMA:%s%s", srcName, kamaStr,
+                             InpAutoSrcByTF ? " | AutoTF" : ""),
                 RATT_TEXT_MUTED, 7);
    }
    else
    {
-      DashLabel("ENG_L1", x + pad, y + 26, "Waiting for data...", RATT_TEXT_MUTED, 9);
-      DashLabel("ENG_V1", x + pad + 90, y + 26, " ", RATT_TEXT_MUTED, 8);
-      DashLabel("ENG_L2", x + pad, y + 42, " ", RATT_TEXT_MUTED, 8);
-      DashLabel("ENG_V2", x + pad + 90, y + 42, " ", RATT_TEXT_MUTED, 8);
-      DashLabel("ENG_L3", x + pad, y + 58, " ", RATT_TEXT_MUTED, 8);
-      DashLabel("ENG_V3", x + pad + 90, y + 58, " ", RATT_TEXT_MUTED, 8);
-      DashLabel("ENG_L4", x + pad, y + 74, " ", RATT_TEXT_MUTED, 8);
-      DashLabel("ENG_V4", x + pad + 90, y + 74, " ", RATT_TEXT_MUTED, 8);
-      DashLabel("ENG_L5", x + pad, y + 90, " ", RATT_TEXT_MUTED, 8);
-      DashLabel("ENG_V5", x + pad + 90, y + 90, " ", RATT_TEXT_MUTED, 8);
-      DashLabel("ENG_L6", x + pad, y + 106, " ", RATT_TEXT_MUTED, 8);
-      DashLabel("ENG_V6", x + pad + 90, y + 106, " ", RATT_TEXT_MUTED, 8);
-      DashLabel("ENG_CFG", x + pad, y + 122, " ", RATT_TEXT_MUTED, 7);
+      DashStateBadge("ENG", x + pad, y + 24, 110, 18, 0.0);
+      DashLabel("ENG_L1", x + pad, y + 50, "Waiting for data...", RATT_TEXT_MUTED, 9);
+      DashLabel("ENG_V1", x + pad + 90, y + 50, " ", RATT_TEXT_MUTED, 8);
+      DashLabel("ENG_L2", x + pad, y + 64, " ", RATT_TEXT_MUTED, 8);
+      DashLabel("ENG_V2", x + pad + 90, y + 64, " ", RATT_TEXT_MUTED, 8);
+      DashLabel("ENG_L3", x + pad, y + 78, " ", RATT_TEXT_MUTED, 8);
+      DashLabel("ENG_V3", x + pad + 90, y + 78, " ", RATT_TEXT_MUTED, 8);
+      DashLabel("ENG_L4", x + pad, y + 92, " ", RATT_TEXT_MUTED, 8);
+      DashLabel("ENG_V4", x + pad + 90, y + 92, " ", RATT_TEXT_MUTED, 8);
+      DashLabel("ENG_L5", x + pad, y + 106, " ", RATT_TEXT_MUTED, 8);
+      DashLabel("ENG_V5", x + pad + 90, y + 106, " ", RATT_TEXT_MUTED, 8);
+      DashLabel("ENG_CFG", x + pad, y + 120, " ", RATT_TEXT_MUTED, 7);
    }
+
+   // [v2.13] Toggle button row (in fondo al pannello, stessa riga)
+   int btnY = y + RATT_H_ENGINE - 18;
+   int btnW = 36;
+   int btnH = 13;
+   int btnGap = 4;
+   int btnX = x + pad;
+   DashLabel("ENG_TGL_LBL", btnX, btnY - 11, "Show:", RATT_TEXT_MUTED, 7);
+   btnX = x + pad + 36;
+   DashToggleButton("TRAIL",   btnX,                          btnY, btnW, btnH, g_dash_show_trail,   "Trail");
+   DashToggleButton("ARROWS",  btnX + (btnW + btnGap),        btnY, btnW, btnH, g_dash_show_arrows,  "Arrows");
+   DashToggleButton("ENTRY",   btnX + (btnW + btnGap) * 2,    btnY, btnW, btnH, g_dash_show_entry,   "Entry");
+   DashToggleButton("CANDLES", btnX + (btnW + btnGap) * 3,    btnY, btnW, btnH, g_dash_show_candles, "Candles");
 }
 
 //+------------------------------------------------------------------+
