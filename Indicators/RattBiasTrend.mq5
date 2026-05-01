@@ -22,25 +22,35 @@
 //|   - Dashboard modern con card (STATO BIAS + CONFIGURAZIONE)      |
 //|   - Font Segoe UI / Consolas, palette identica a UTBot           |
 //|                                                                  |
-//| BUFFER PUBBLICI (per iCustom futuro dell'EA):                    |
-//|   Buffer 0: B_MainLine     — base (MA o HL2)                     |
-//|   Buffer 1: B_ColorIndex   — 0 teal / 1 coral / 2 dim            |
-//|   Buffer 2: B_Upper        — banda superiore finale              |
-//|   Buffer 3: B_Lower        — banda inferiore finale              |
-//|   Buffer 4: B_FlipLong     — prezzo freccia ▲ o EMPTY_VALUE      |
-//|   Buffer 5: B_FlipShort    — prezzo freccia ▼ o EMPTY_VALUE      |
-//|   Buffer 6: B_State        — 1.0 LONG / -1.0 SHORT / 0.0 WARMUP  |
-//|   Buffer 7: B_Flip         — 1.0 sulla candela del flip HTF      |
+//| BUFFER PUBBLICI (per iCustom dell'EA):                           |
+//|   Buffer 0: B_MainLine         — base (MA o HL2)                 |
+//|   Buffer 1: B_ColorIndex       — 0 teal / 1 coral / 2 dim        |
+//|   Buffer 2: B_Upper            — banda superiore finale          |
+//|   Buffer 3: B_Lower            — banda inferiore finale          |
+//|   Buffer 4: B_FlipLong         — prezzo freccia ▲ o EMPTY_VALUE  |
+//|   Buffer 5: B_FlipShort        — prezzo freccia ▼ o EMPTY_VALUE  |
+//|   Buffer 6: B_State            — GATE: +1 LONG / -1 SHORT / 0    |
+//|   Buffer 7: B_Flip             — 1.0 sulla candela del flip HTF  |
+//|   Buffer 8: B_EfficiencyRatio  — v1.09: Kaufman ER raw (0..1)    |
+//|   Buffer 9: B_SuperSmoother    — v1.09: Ehlers SS su HTF         |
+//|                                                                  |
+//| v1.09 NOTE: i buffer 8-9 sono "observability pack" — esposti per |
+//| lettura EA e dashboard, ma IL GATE RESTA B_State (voto singolo). |
+//| Il committee AND verrà eventualmente aggiunto in v1.10 dopo      |
+//| calibrazione empirica delle soglie sui dati reali.               |
 //+------------------------------------------------------------------+
 #property copyright   "Rattapignola ecosystem"
-#property version     "1.08"
+#property version     "1.13"
 #property description "Bias HTF direzionale — Supertrend classico | MA+ATR"
+#property description "v1.13: PMA Ehlers + One Euro Filter (anti-microstorni avanzato)"
+#property description "v1.12: Sticky Bias — bande flip allargate + confirmation bars"
+#property description "v1.11: Fix tema chart su cambio TF (helper atomici idempotenti)"
+#property description "v1.10: Observability Pack — Kaufman ER (buf 8) + Ehlers SS (buf 9)"
 #property description "Calcolo su TF configurabile, proiezione overlay sul chart"
-#property description "Buffer 3 (B_State) = +1 LONG / -1 SHORT / 0 WARMUP"
 #property description "Stile UTBotAdaptive: tema scuro + dashboard modern"
 
 #property indicator_chart_window
-#property indicator_buffers 8
+#property indicator_buffers 10
 #property indicator_plots   5
 
 //--- Plot 0: linea principale colorata (bias)
@@ -93,14 +103,16 @@ enum ENUM_BIAS_ENGINE
 //+------------------------------------------------------------------+
 enum ENUM_BIAS_MATYPE
 {
-   BIAS_MA_EMA  = 0,   // EMA  — Exponential Moving Average
-   BIAS_MA_SMA  = 1,   // SMA  — Simple Moving Average
-   BIAS_MA_SMMA = 2,   // SMMA — Smoothed Moving Average
-   BIAS_MA_LWMA = 3,   // LWMA — Linear Weighted Moving Average
-   BIAS_MA_HMA  = 4,   // HMA  — Hull Moving Average
-   BIAS_MA_KAMA  = 5,   // KAMA  — Kaufman Adaptive MA
-   BIAS_MA_JMA   = 6,   // JMA   — Jurik-style Adaptive MA
-   BIAS_MA_ZLEMA = 7    // ZLEMA — Ehlers Zero Lag EMA
+   BIAS_MA_EMA     = 0,   // EMA  — Exponential Moving Average
+   BIAS_MA_SMA     = 1,   // SMA  — Simple Moving Average
+   BIAS_MA_SMMA    = 2,   // SMMA — Smoothed Moving Average
+   BIAS_MA_LWMA    = 3,   // LWMA — Linear Weighted Moving Average
+   BIAS_MA_HMA     = 4,   // HMA  — Hull Moving Average
+   BIAS_MA_KAMA    = 5,   // KAMA  — Kaufman Adaptive MA
+   BIAS_MA_JMA     = 6,   // JMA   — Jurik-style Adaptive MA
+   BIAS_MA_ZLEMA   = 7,   // ZLEMA — Ehlers Zero Lag EMA
+   BIAS_MA_PMA     = 8,   // v1.13: PMA — Ehlers Predictive MA (puro)
+   BIAS_MA_PMA_OEF = 9    // v1.13: PMA + One Euro Filter (anti-microstorni)
 };
 
 //+------------------------------------------------------------------+
@@ -185,6 +197,35 @@ input color  InpThemeBearCandl = C'239,83,80';     // Candela Ribassista
 input group "=== Warmup ==="
 input int                InpWarmupExtraBars= 10;                  // Barre extra warmup HTF
 
+input group "╔═══════════════════════════════════════════════════════════╗"
+input group "║  🎯 OBSERVABILITY PACK v1.09 (ER + SuperSmoother)        ║"
+input group "╚═══════════════════════════════════════════════════════════╝"
+// NOTA v1.09: questi parametri pilotano SOLO il calcolo dei buffer
+// B_EfficiencyRatio e B_SuperSmoother e il pannello dashboard "Voti
+// Preview". Il gate (B_State) NON usa ancora questi segnali — resta
+// il ratchet MA+ATR del voto 1. Serve per osservare empiricamente
+// i due filtri su dati reali prima di introdurre l'AND committee (v1.10).
+input int                InpERLength         = 21;                // Lunghezza Kaufman ER
+input double             InpERThreshold      = 0.35;              // Soglia centrale VALID/CHOP
+input double             InpERHysteresis     = 0.05;              // Dead-band (±) per isteresi
+input int                InpSuperSmoothPeriod= 15;                // Periodo Ehlers SuperSmoother (Ehlers default 15)
+
+//=== PMA — Parametri (attivi SOLO se InpMAType = PMA o PMA_OEF) v1.13 ===
+input group "=== MA — Parametri PMA (Ehlers Predictive MA) ==="
+input int                InpPMAPeriod      = 7;                   // PMA period (Ehlers default 7, range 5-21)
+
+//=== One Euro Filter — Parametri (SOLO se InpMAType = PMA_OEF) v1.13 ===
+input group "=== MA — Parametri One Euro Filter ==="
+input double             InpOEFMinCutoff   = 1.0;                 // Cutoff minimo (Hz). Più basso = smoothing più aggressivo in chop
+input double             InpOEFBeta        = 0.05;                // Sensibilità velocità. Più alto = filtra meno in trend forti
+input double             InpOEFDerivCutoff = 1.0;                 // Cutoff derivata (Hz, raramente cambiato)
+
+//=== Anti-microstorm — Sticky Bias v1.12 ===========================
+input group "=== Sticky Bias (anti-microstorni) ==="
+input bool               InpStickyBias        = true;             // Master switch (false = comportamento v1.11)
+input double             InpATRMultiplierFlip = 3.5;              // Mult ATR per flip (>= InpATRMultiplier)
+input int                InpFlipConfirmBars   = 1;                // Barre HTF consecutive per conferma flip (1 = no confirmation)
+
 input group "=== Debug / Logging ==="
 input ENUM_LOG_LEVEL     InpLogLevel       = LOG_INFO;             // Livello log (OFF/ERROR/WARN/INFO/DEBUG)
 
@@ -201,14 +242,17 @@ input ENUM_LOG_LEVEL     InpLogLevel       = LOG_INFO;             // Livello lo
 //   Buffer 5 B_FlipShort   DATA         → Plot 4 (DRAW_ARROW ▼)
 //   Buffer 6 B_State       DATA         → per iCustom EA
 //   Buffer 7 B_Flip        DATA         → per iCustom EA
-double B_MainLine  [];   // Buffer 0
-double B_ColorIndex[];   // Buffer 1 (INDICATOR_COLOR_INDEX per Plot 0)
-double B_Upper     [];   // Buffer 2
-double B_Lower     [];   // Buffer 3
-double B_FlipLong  [];   // Buffer 4
-double B_FlipShort [];   // Buffer 5
-double B_State     [];   // Buffer 6 (esposto per iCustom EA)
-double B_Flip      [];   // Buffer 7 (esposto per iCustom EA)
+double B_MainLine       [];   // Buffer 0
+double B_ColorIndex     [];   // Buffer 1 (INDICATOR_COLOR_INDEX per Plot 0)
+double B_Upper          [];   // Buffer 2
+double B_Lower          [];   // Buffer 3
+double B_FlipLong       [];   // Buffer 4
+double B_FlipShort      [];   // Buffer 5
+double B_State          [];   // Buffer 6 (GATE, esposto per iCustom EA)
+double B_Flip           [];   // Buffer 7 (esposto per iCustom EA)
+// --- v1.09 observability buffers (INDICATOR_CALCULATIONS, esposti iCustom) ---
+double B_EfficiencyRatio[];   // Buffer 8 — Kaufman ER su HTF proiettato su LTF
+double B_SuperSmoother  [];   // Buffer 9 — Ehlers SuperSmoother su HTF proiettato su LTF
 
 //+------------------------------------------------------------------+
 //| CACHE HTF (calcolata ogni OnCalculate, series indexing)          |
@@ -221,9 +265,15 @@ datetime  g_htf_time [];
 double    g_htf_ma   [];   // MA su HTF (solo se ENGINE_MA_ATR_BAND)
 double    g_htf_atr  [];   // ATR Wilder RMA su HTF
 double    g_htf_base [];   // base = close-HL2 o MA (a seconda del mode)
-double    g_htf_fUp  [];   // final upper ratchettato
-double    g_htf_fLow [];   // final lower ratchettato
+double    g_htf_fUp  [];   // final upper ratchettato (banda visiva, mult InpATRMultiplier)
+double    g_htf_fLow [];   // final lower ratchettato (banda visiva)
+double    g_htf_fUpFlip [];   // v1.12: banda di flip allargata (mult InpATRMultiplierFlip)
+double    g_htf_fLowFlip[];   // v1.12: banda di flip allargata
 int       g_htf_state[];   // +1 / -1 / 0 (warmup)
+// --- v1.09 observability HTF cache ---
+double    g_htf_er     [];   // Kaufman ER per bar HTF [0..1] (EMPTY_VALUE in warmup)
+int       g_htf_erState[];   // Stato isteresi ER: 1=VALID, 0=CHOP
+double    g_htf_ss     [];   // Ehlers 2-pole SuperSmoother value per bar HTF
 
 int       g_htfBarsUsed = 0;  // quante barre HTF sono effettivamente calcolate
 
@@ -249,6 +299,7 @@ bool   g_origShowGrid    = true;
 int    g_origShowVolumes = 0;
 bool   g_origForeground  = true;
 bool   g_themeApplied    = false;
+bool   g_origSaved       = false;  // v1.11: separa "originali salvati" da "tema applicato"
 
 //+------------------------------------------------------------------+
 //| Diagnostica one-shot: stampa stato buffer alla prima calcolo OK  |
@@ -314,14 +365,17 @@ int OnInit()
 {
    //--- Mappa buffer (vedi commento sopra le dichiarazioni: il color index
    //    deve stare immediatamente dopo il data buffer del DRAW_COLOR_LINE)
-   SetIndexBuffer(0, B_MainLine,   INDICATOR_DATA);
-   SetIndexBuffer(1, B_ColorIndex, INDICATOR_COLOR_INDEX);
-   SetIndexBuffer(2, B_Upper,      INDICATOR_DATA);
-   SetIndexBuffer(3, B_Lower,      INDICATOR_DATA);
-   SetIndexBuffer(4, B_FlipLong,   INDICATOR_DATA);
-   SetIndexBuffer(5, B_FlipShort,  INDICATOR_DATA);
-   SetIndexBuffer(6, B_State,      INDICATOR_DATA);
-   SetIndexBuffer(7, B_Flip,       INDICATOR_DATA);
+   SetIndexBuffer(0, B_MainLine,        INDICATOR_DATA);
+   SetIndexBuffer(1, B_ColorIndex,      INDICATOR_COLOR_INDEX);
+   SetIndexBuffer(2, B_Upper,           INDICATOR_DATA);
+   SetIndexBuffer(3, B_Lower,           INDICATOR_DATA);
+   SetIndexBuffer(4, B_FlipLong,        INDICATOR_DATA);
+   SetIndexBuffer(5, B_FlipShort,       INDICATOR_DATA);
+   SetIndexBuffer(6, B_State,           INDICATOR_DATA);
+   SetIndexBuffer(7, B_Flip,            INDICATOR_DATA);
+   // v1.09: observability buffers (non plottati, solo per iCustom / dashboard)
+   SetIndexBuffer(8, B_EfficiencyRatio, INDICATOR_CALCULATIONS);
+   SetIndexBuffer(9, B_SuperSmoother,   INDICATOR_CALCULATIONS);
 
    //--- EMPTY_VALUE per tutti i buffer visivi (Plot 0..4)
    PlotIndexSetDouble(0, PLOT_EMPTY_VALUE, EMPTY_VALUE);
@@ -376,6 +430,57 @@ int OnInit()
       RBTLog(LOG_ERROR, "INIT", StringFormat("InpATRPeriod deve essere >= 2 (attuale: %d)", InpATRPeriod));
       return INIT_FAILED;
    }
+
+   //--- v1.12: validazione Sticky Bias
+   if(InpStickyBias)
+   {
+      if(InpATRMultiplierFlip < InpATRMultiplier)
+      {
+         RBTLog(LOG_ERROR, "INIT",
+            StringFormat("InpATRMultiplierFlip (%.2f) deve essere >= InpATRMultiplier (%.2f)",
+               InpATRMultiplierFlip, InpATRMultiplier));
+         return INIT_FAILED;
+      }
+      if(InpFlipConfirmBars < 1 || InpFlipConfirmBars > 5)
+      {
+         RBTLog(LOG_ERROR, "INIT",
+            StringFormat("InpFlipConfirmBars deve essere tra 1 e 5 (attuale: %d)", InpFlipConfirmBars));
+         return INIT_FAILED;
+      }
+   }
+
+   //--- v1.13: validazione PMA / PMA+OEF
+   if(InpMAType == BIAS_MA_PMA || InpMAType == BIAS_MA_PMA_OEF)
+   {
+      if(InpPMAPeriod < 5 || InpPMAPeriod > 50)
+      {
+         RBTLog(LOG_ERROR, "INIT",
+            StringFormat("InpPMAPeriod deve essere tra 5 e 50 (attuale: %d)", InpPMAPeriod));
+         return INIT_FAILED;
+      }
+   }
+   if(InpMAType == BIAS_MA_PMA_OEF)
+   {
+      if(InpOEFMinCutoff <= 0.0 || InpOEFMinCutoff > 10.0)
+      {
+         RBTLog(LOG_ERROR, "INIT",
+            StringFormat("InpOEFMinCutoff deve essere in (0, 10] (attuale: %.3f)", InpOEFMinCutoff));
+         return INIT_FAILED;
+      }
+      if(InpOEFBeta < 0.0 || InpOEFBeta > 5.0)
+      {
+         RBTLog(LOG_ERROR, "INIT",
+            StringFormat("InpOEFBeta deve essere in [0, 5] (attuale: %.3f)", InpOEFBeta));
+         return INIT_FAILED;
+      }
+      if(InpOEFDerivCutoff <= 0.0 || InpOEFDerivCutoff > 10.0)
+      {
+         RBTLog(LOG_ERROR, "INIT",
+            StringFormat("InpOEFDerivCutoff deve essere in (0, 10] (attuale: %.3f)", InpOEFDerivCutoff));
+         return INIT_FAILED;
+      }
+   }
+
    if(InpMAType == BIAS_MA_KAMA)
    {
       // KAMA: SC = 2/(F+1) → F o S <= 0 genera divisione per zero → NaN propagato
@@ -423,14 +528,24 @@ int OnInit()
    IndicatorSetString(INDICATOR_SHORTNAME, shortName);
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
-   //--- Applica tema chart (stesso pattern UTBotAdaptive)
+   //--- v1.11: gestione tema completa (primo load, cambio TF, parameter change, toggle on/off)
    if(InpApplyTheme)
-      ApplyChartTheme();
+   {
+      SaveOriginalChartColors();   // salva orig SOLO la prima volta (idempotente)
+      ApplyThemeColors();          // applica/riapplica i colori (sempre)
+      ChartRedraw(0);              // commit visuale immediato
+      g_themeApplied = true;
+   }
+   else if(g_themeApplied)
+   {
+      // Utente ha disabilitato InpApplyTheme via parametri → restore
+      RestoreChartTheme();
+   }
 
    //--- Stampa versione + config effettiva (sempre visibile se log >= INFO)
    //    Utile per confermare ricompilazione e per auditing backtest.
    RBTLog(LOG_INFO, "INIT", StringFormat(
-      "v1.08 started — BiasTF=%s Engine=%s MAType=%s MAPeriod=%d (eff=%d) ATRPeriod=%d ATRMult=%.2f ATRSmooth=%s foreground=%s",
+      "v1.13 started — BiasTF=%s Engine=%s MAType=%s MAPeriod=%d (eff=%d) ATRPeriod=%d ATRMult=%.2f ATRSmooth=%s foreground=%s",
       EnumToString(InpBiasTF),
       (InpEngineMode == ENGINE_SUPERTREND_CLASSIC ? "Supertrend" : "MA+ATR"),
       EnumToString(InpMAType),
@@ -445,6 +560,11 @@ int OnInit()
    if(InpMAType == BIAS_MA_JMA)
       RBTLog(LOG_INFO, "INIT", StringFormat("JMA params — Period=%d Phase=%d",
          InpJMAPeriod, InpJMAPhase));
+
+   //--- v1.10 observability pack params
+   RBTLog(LOG_INFO, "INIT", StringFormat(
+      "Observability (v1.10) — ER(len=%d thr=%.2f±%.2f) | SS(period=%d) — gate NON coinvolto",
+      InpERLength, InpERThreshold, InpERHysteresis, InpSuperSmoothPeriod));
 
    //--- Dashboard modern (card-based)
    if(InpShowDashboard)
@@ -471,11 +591,25 @@ void OnDeinit(const int reason)
    CleanupRBTDashboard();
    RBTLog(LOG_DEBUG, "DEINIT", "Dashboard objects removed.");
 
-   //--- Ripristina tema chart se era stato applicato
-   if(g_themeApplied)
+   //--- v1.11: restore tema SOLO su rimozione reale dell'indicatore
+   // Su CHARTCHANGE, PARAMETERS, RECOMPILE, ACCOUNT: NON restora
+   // (OnInit gestirà il re-apply tramite ApplyThemeColors idempotente)
+   bool real_removal = (reason == REASON_REMOVE     ||
+                        reason == REASON_CHARTCLOSE ||
+                        reason == REASON_TEMPLATE   ||
+                        reason == REASON_PROGRAM    ||
+                        reason == REASON_INITFAILED ||
+                        reason == REASON_CLOSE);
+
+   if(g_themeApplied && real_removal)
    {
       RestoreChartTheme();
-      RBTLog(LOG_DEBUG, "DEINIT", "Chart theme restored to original.");
+      RBTLog(LOG_DEBUG, "DEINIT", StringFormat("Chart theme restored (real removal, reason=%d).", reason));
+   }
+   else if(g_themeApplied)
+   {
+      RBTLog(LOG_DEBUG, "DEINIT",
+         StringFormat("Theme NOT restored (transient deinit, reason=%d).", reason));
    }
 }
 
@@ -500,11 +634,13 @@ int OnCalculate(const int        rates_total,
    ArraySetAsSeries(B_State,      false);
    ArraySetAsSeries(B_Flip,       false);
    ArraySetAsSeries(B_ColorIndex, false);
-   ArraySetAsSeries(B_FlipLong,   false);
-   ArraySetAsSeries(B_FlipShort,  false);
-   ArraySetAsSeries(time,         false);
-   ArraySetAsSeries(high,         false);
-   ArraySetAsSeries(low,          false);
+   ArraySetAsSeries(B_FlipLong,        false);
+   ArraySetAsSeries(B_FlipShort,       false);
+   ArraySetAsSeries(B_EfficiencyRatio, false);  // v1.10 fix: coerenza con gli altri buffer
+   ArraySetAsSeries(B_SuperSmoother,   false);  // v1.10 fix: coerenza con gli altri buffer
+   ArraySetAsSeries(time,              false);
+   ArraySetAsSeries(high,              false);
+   ArraySetAsSeries(low,               false);
 
    //--- Barre HTF disponibili
    // NOTA: gli early-return di warmup restituiscono 0 (non rates_total), così
@@ -552,8 +688,14 @@ int OnCalculate(const int        rates_total,
       return 0;
    }
 
-   //--- Step 5: base, bande, ratchet, stato su HTF
+   //--- Step 5: base, bande, ratchet, stato su HTF (Voto 1 = GATE)
    ComputeHTFState();
+
+   //--- Step 5b v1.09: observability pack — calcolo ER e SuperSmoother
+   //    Questi popolano i buffer 8/9 e sono esposti in dashboard, ma NON
+   //    partecipano al gate (B_State resta il voto singolo v1.08).
+   ComputeHTFEfficiencyRatio();
+   ComputeHTFSuperSmoother();
 
    //--- Step 6: proiezione HTF -> LTF chart bars
    ProjectHTFToChart(rates_total, prev_calculated, time, high, low);
@@ -597,6 +739,14 @@ int OnCalculate(const int        rates_total,
          (g_htfBarsUsed > 0 ? DoubleToString(g_htf_close[0], _Digits)           : "n/a"),
          (g_htfBarsUsed > 0 ? IntegerToString(g_htf_state[0])                   : "n/a")));
 
+      // v1.09: sample ER e SS sulla bar più recente
+      RBTLog(LOG_INFO, "DIAG-OBS", StringFormat(
+         "ER[0]=%s state=%s | SS[0]=%s SS[1]=%s",
+         (g_htfBarsUsed > 0 && g_htf_er[0] != EMPTY_VALUE ? DoubleToString(g_htf_er[0], 3) : "n/a"),
+         (g_htfBarsUsed > 0 ? (g_htf_erState[0] == 1 ? "VALID" : "CHOP") : "n/a"),
+         (g_htfBarsUsed > 0 ? DoubleToString(g_htf_ss[0], _Digits) : "n/a"),
+         (g_htfBarsUsed > 1 ? DoubleToString(g_htf_ss[1], _Digits) : "n/a")));
+
       // Heuristic di salute: se validBars << rates_total c'è un bug (vedi fix v1.02)
       if(rates_total > 10 && validCount < rates_total / 2)
          RBTLog(LOG_WARN, "DIAG", StringFormat(
@@ -630,6 +780,8 @@ bool CreateMAHandles()
       case BIAS_MA_KAMA:
       case BIAS_MA_JMA:
       case BIAS_MA_ZLEMA:
+      case BIAS_MA_PMA:       // v1.13: calcolato inline
+      case BIAS_MA_PMA_OEF:   // v1.13: calcolato inline
          needStandard = false;  // calcolate inline, nessun handle richiesto
          break;
       default: needStandard = false; break;
@@ -710,29 +862,44 @@ bool RefreshHTFCache(int barsToUse)
          got, barsToUse, EnumToString(InpBiasTF)));
 
    // Resize output arrays
-   ArrayResize(g_htf_ma,    g_htfBarsUsed);
-   ArrayResize(g_htf_atr,   g_htfBarsUsed);
-   ArrayResize(g_htf_base,  g_htfBarsUsed);
-   ArrayResize(g_htf_fUp,   g_htfBarsUsed);
-   ArrayResize(g_htf_fLow,  g_htfBarsUsed);
-   ArrayResize(g_htf_state, g_htfBarsUsed);
+   ArrayResize(g_htf_ma,      g_htfBarsUsed);
+   ArrayResize(g_htf_atr,     g_htfBarsUsed);
+   ArrayResize(g_htf_base,    g_htfBarsUsed);
+   ArrayResize(g_htf_fUp,     g_htfBarsUsed);
+   ArrayResize(g_htf_fLow,    g_htfBarsUsed);
+   ArrayResize(g_htf_fUpFlip,  g_htfBarsUsed);  // v1.12
+   ArrayResize(g_htf_fLowFlip, g_htfBarsUsed);  // v1.12
+   ArrayResize(g_htf_state,   g_htfBarsUsed);
+   ArrayResize(g_htf_er,      g_htfBarsUsed);
+   ArrayResize(g_htf_erState, g_htfBarsUsed);
+   ArrayResize(g_htf_ss,      g_htfBarsUsed);
 
-   // Inizializzazione difensiva: così se un computer MA/ATR lascia buchi
+   // Inizializzazione difensiva: così se un computer MA/ATR/ER/SS lascia buchi
    // (es. CopyBuffer parziale), i buchi sono EMPTY_VALUE e ComputeHTFState
    // li tratta correttamente come warmup invece di usare zeri casuali.
-   ArrayInitialize(g_htf_ma,    EMPTY_VALUE);
-   ArrayInitialize(g_htf_atr,   EMPTY_VALUE);
-   ArrayInitialize(g_htf_base,  EMPTY_VALUE);
-   ArrayInitialize(g_htf_fUp,   EMPTY_VALUE);
-   ArrayInitialize(g_htf_fLow,  EMPTY_VALUE);
-   ArrayInitialize(g_htf_state, 0);
+   ArrayInitialize(g_htf_ma,      EMPTY_VALUE);
+   ArrayInitialize(g_htf_atr,     EMPTY_VALUE);
+   ArrayInitialize(g_htf_base,    EMPTY_VALUE);
+   ArrayInitialize(g_htf_fUp,      EMPTY_VALUE);
+   ArrayInitialize(g_htf_fLow,     EMPTY_VALUE);
+   ArrayInitialize(g_htf_fUpFlip,  EMPTY_VALUE);  // v1.12
+   ArrayInitialize(g_htf_fLowFlip, EMPTY_VALUE);  // v1.12
+   ArrayInitialize(g_htf_state,   0);
+   ArrayInitialize(g_htf_er,      EMPTY_VALUE);
+   ArrayInitialize(g_htf_erState, 0);
+   ArrayInitialize(g_htf_ss,      EMPTY_VALUE);
 
-   ArraySetAsSeries(g_htf_ma,    true);
-   ArraySetAsSeries(g_htf_atr,   true);
-   ArraySetAsSeries(g_htf_base,  true);
-   ArraySetAsSeries(g_htf_fUp,   true);
-   ArraySetAsSeries(g_htf_fLow,  true);
-   ArraySetAsSeries(g_htf_state, true);
+   ArraySetAsSeries(g_htf_ma,      true);
+   ArraySetAsSeries(g_htf_atr,     true);
+   ArraySetAsSeries(g_htf_base,    true);
+   ArraySetAsSeries(g_htf_fUp,      true);
+   ArraySetAsSeries(g_htf_fLow,     true);
+   ArraySetAsSeries(g_htf_fUpFlip,  true);  // v1.12
+   ArraySetAsSeries(g_htf_fLowFlip, true);  // v1.12
+   ArraySetAsSeries(g_htf_state,   true);
+   ArraySetAsSeries(g_htf_er,      true);
+   ArraySetAsSeries(g_htf_erState, true);
+   ArraySetAsSeries(g_htf_ss,      true);
 
    return true;
 }
@@ -759,6 +926,10 @@ bool ComputeHTFMA()
 
       case BIAS_MA_ZLEMA:
          return ComputeHTFMA_ZLEMA();
+
+      case BIAS_MA_PMA:
+      case BIAS_MA_PMA_OEF:
+         return ComputeHTFMA_PMA();   // v1.13
 
       default:
          return false;
@@ -1083,6 +1254,122 @@ bool ComputeHTFMA_ZLEMA()
 }
 
 //+------------------------------------------------------------------+
+//| ComputeHTFMA_PMA — Ehlers Predictive MA + (opt) One Euro Filter   |
+//+------------------------------------------------------------------+
+// Formula PMA (Ehlers, "Rocket Science for Traders" 2001, cap.20):
+//   WMA1[i] = WMA(close, N, i)
+//   WMA2[i] = WMA(WMA1, N, i)
+//   PMA[i]  = 2*WMA1[i] - WMA2[i]
+//
+// Se InpMAType == BIAS_MA_PMA_OEF, applica in cascata One Euro Filter:
+//   cutoff adattivo basato sulla velocità del PMA → smoothing aggressivo
+//   in chop, lascia passare in trend.
+//
+// Formule One Euro Filter (Casiez et al. CHI 2012):
+//   smoothing_factor(t_e, cutoff) = r / (r + 1) dove r = 2π·cutoff·t_e
+//   dx[i]      = x[i] - x[i-1]                (t_e = 1 per HTF)
+//   α_d        = smoothing_factor(1, d_cutoff)
+//   dx_hat[i]  = α_d·dx[i] + (1-α_d)·dx_hat[i-1]
+//   cutoff[i]  = min_cutoff + β·|dx_hat[i]|
+//   α[i]       = smoothing_factor(1, cutoff[i])
+//   x_hat[i]   = α[i]·x[i] + (1-α[i])·x_hat[i-1]
+bool ComputeHTFMA_PMA()
+{
+   int N     = InpPMAPeriod;
+   int total = g_htfBarsUsed;
+   if(total < 2*N + 2) return false;  // warmup richiede WMA della WMA
+
+   double closeNat[], wma1Nat[], wma2Nat[], pmaNat[];
+   ArrayResize(closeNat, total);
+   ArrayResize(wma1Nat,  total);
+   ArrayResize(wma2Nat,  total);
+   ArrayResize(pmaNat,   total);
+
+   SeriesToNatural(g_htf_close, closeNat, total);
+
+   //--- Step 1: WMA1 = WMA(close, N) — usa WMAPoint helper esistente
+   for(int i = 0; i < N - 1; i++)
+      wma1Nat[i] = closeNat[i];   // warmup: identità
+   for(int i = N - 1; i < total; i++)
+      wma1Nat[i] = WMAPoint(closeNat, i, N);
+
+   //--- Step 2: WMA2 = WMA(WMA1, N)
+   for(int i = 0; i < 2*(N-1); i++)
+      wma2Nat[i] = wma1Nat[i];   // warmup: identità
+   for(int i = 2*(N-1); i < total; i++)
+      wma2Nat[i] = WMAPoint(wma1Nat, i, N);
+
+   //--- Step 3: PMA = 2*WMA1 - WMA2
+   for(int i = 0; i < total; i++)
+      pmaNat[i] = 2.0 * wma1Nat[i] - wma2Nat[i];
+
+   //--- Step 4 (opzionale): One Euro Filter
+   if(InpMAType == BIAS_MA_PMA_OEF)
+   {
+      double oefNat[];
+      ArrayResize(oefNat, total);
+
+      // Stato del filtro
+      double xHatPrev  = pmaNat[0];
+      double dxHatPrev = 0.0;
+      oefNat[0] = pmaNat[0];
+
+      const double TWO_PI = 2.0 * 3.14159265358979323846;
+      const double t_e   = 1.0;  // sample period = 1 barra HTF
+
+      // α_d fisso (cutoff fisso per la derivata)
+      double r_d = TWO_PI * InpOEFDerivCutoff * t_e;
+      double a_d = r_d / (r_d + 1.0);
+
+      for(int i = 1; i < total; i++)
+      {
+         //--- 1. Derivata grezza
+         double dx = (pmaNat[i] - pmaNat[i-1]) / t_e;
+
+         //--- 2. Derivata filtrata (low-pass con cutoff fisso)
+         double dxHat = a_d * dx + (1.0 - a_d) * dxHatPrev;
+
+         //--- 3. Cutoff adattivo
+         double cutoff = InpOEFMinCutoff + InpOEFBeta * MathAbs(dxHat);
+
+         //--- 4. α adattivo
+         double r = TWO_PI * cutoff * t_e;
+         double alpha = r / (r + 1.0);
+
+         //--- 5. Output filtrato
+         double xHat = alpha * pmaNat[i] + (1.0 - alpha) * xHatPrev;
+
+         oefNat[i] = xHat;
+
+         //--- Memorizza stato per prossima iterazione
+         xHatPrev  = xHat;
+         dxHatPrev = dxHat;
+      }
+
+      NaturalToSeries(oefNat, g_htf_ma, total);
+
+      RBTLog(LOG_DEBUG, "MA",
+         StringFormat("PMA+OEF OK — N=%d minCut=%.2f β=%.3f dCut=%.2f ma[0]=%s ma[last]=%s",
+            N, InpOEFMinCutoff, InpOEFBeta, InpOEFDerivCutoff,
+            DoubleToString(g_htf_ma[0],      _Digits),
+            DoubleToString(g_htf_ma[total-1], _Digits)));
+   }
+   else
+   {
+      //--- PMA puro (no OEF)
+      NaturalToSeries(pmaNat, g_htf_ma, total);
+
+      RBTLog(LOG_DEBUG, "MA",
+         StringFormat("PMA OK — N=%d ma[0]=%s ma[last]=%s",
+            N,
+            DoubleToString(g_htf_ma[0],      _Digits),
+            DoubleToString(g_htf_ma[total-1], _Digits)));
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
 //| ComputeHTFATR — ATR su HTF (Wilder RMA / SMA / EMA selezionabile)|
 //+------------------------------------------------------------------+
 // TR[i] = max(high-low, |high-prevClose|, |low-prevClose|)
@@ -1198,11 +1485,16 @@ void ComputeHTFState()
    {
       g_htf_fUp [oldest] = g_htf_base[oldest] + InpATRMultiplier * g_htf_atr[oldest];
       g_htf_fLow[oldest] = g_htf_base[oldest] - InpATRMultiplier * g_htf_atr[oldest];
+      // v1.12: seed bande di flip allargate (parallele alle bande visive)
+      g_htf_fUpFlip [oldest] = g_htf_base[oldest] + InpATRMultiplierFlip * g_htf_atr[oldest];
+      g_htf_fLowFlip[oldest] = g_htf_base[oldest] - InpATRMultiplierFlip * g_htf_atr[oldest];
    }
    else
    {
       g_htf_fUp [oldest] = EMPTY_VALUE;
       g_htf_fLow[oldest] = EMPTY_VALUE;
+      g_htf_fUpFlip [oldest] = EMPTY_VALUE;  // v1.12
+      g_htf_fLowFlip[oldest] = EMPTY_VALUE;  // v1.12
       g_htf_state[oldest] = 0;
    }
 
@@ -1222,29 +1514,79 @@ void ComputeHTFState()
       double basicUp  = base + InpATRMultiplier * atr;
       double basicLow = base - InpATRMultiplier * atr;
 
-      double prevUp  = g_htf_fUp [i + 1];
-      double prevLow = g_htf_fLow[i + 1];
-      double prevClose = g_htf_close[i + 1];
+      // v1.12: bande di flip allargate (parallele, stesso ratchet)
+      double basicUpFlip  = base + InpATRMultiplierFlip * atr;
+      double basicLowFlip = base - InpATRMultiplierFlip * atr;
+
+      double prevUp      = g_htf_fUp     [i + 1];
+      double prevLow     = g_htf_fLow    [i + 1];
+      double prevUpFlip  = g_htf_fUpFlip [i + 1];
+      double prevLowFlip = g_htf_fLowFlip[i + 1];
+      double prevClose   = g_htf_close   [i + 1];
 
       if(prevUp == EMPTY_VALUE || prevLow == EMPTY_VALUE || g_htf_state[i + 1] == 0)
       {
-         g_htf_fUp [i] = basicUp;
-         g_htf_fLow[i] = basicLow;
-         g_htf_state[i] = (g_htf_close[i] >= base) ? +1 : -1;
+         g_htf_fUp      [i] = basicUp;
+         g_htf_fLow     [i] = basicLow;
+         g_htf_fUpFlip  [i] = basicUpFlip;   // v1.12
+         g_htf_fLowFlip [i] = basicLowFlip;  // v1.12
+         g_htf_state    [i] = (g_htf_close[i] >= base) ? +1 : -1;
          continue;
       }
 
-      double finalUp  = (basicUp  < prevUp  || prevClose > prevUp ) ? basicUp  : prevUp;
-      double finalLow = (basicLow > prevLow || prevClose < prevLow) ? basicLow : prevLow;
+      double finalUp      = (basicUp      < prevUp      || prevClose > prevUp     ) ? basicUp      : prevUp;
+      double finalLow     = (basicLow     > prevLow     || prevClose < prevLow    ) ? basicLow     : prevLow;
+      double finalUpFlip  = (basicUpFlip  < prevUpFlip  || prevClose > prevUpFlip ) ? basicUpFlip  : prevUpFlip;
+      double finalLowFlip = (basicLowFlip > prevLowFlip || prevClose < prevLowFlip) ? basicLowFlip : prevLowFlip;
 
       int prevState = g_htf_state[i + 1];
       int newState  = prevState;
-      if(prevState == +1 && g_htf_close[i] < finalLow) newState = -1;
-      else if(prevState == -1 && g_htf_close[i] > finalUp) newState = +1;
 
-      g_htf_fUp [i] = finalUp;
-      g_htf_fLow[i] = finalLow;
-      g_htf_state[i] = newState;
+      if(InpStickyBias)
+      {
+         //--- v1.12: flip su banda allargata + confirmation bars
+         bool wantsFlipShort = (prevState == +1 && g_htf_close[i] < finalLowFlip);
+         bool wantsFlipLong  = (prevState == -1 && g_htf_close[i] > finalUpFlip);
+
+         if(wantsFlipShort)
+         {
+            int confirmCount = 1;
+            for(int k = 1; k < InpFlipConfirmBars && (i + k) < g_htfBarsUsed; k++)
+            {
+               double prevFlipBand = g_htf_fLowFlip[i + k];
+               if(prevFlipBand != EMPTY_VALUE && g_htf_close[i + k] < prevFlipBand)
+                  confirmCount++;
+               else
+                  break;
+            }
+            if(confirmCount >= InpFlipConfirmBars) newState = -1;
+         }
+         else if(wantsFlipLong)
+         {
+            int confirmCount = 1;
+            for(int k = 1; k < InpFlipConfirmBars && (i + k) < g_htfBarsUsed; k++)
+            {
+               double prevFlipBand = g_htf_fUpFlip[i + k];
+               if(prevFlipBand != EMPTY_VALUE && g_htf_close[i + k] > prevFlipBand)
+                  confirmCount++;
+               else
+                  break;
+            }
+            if(confirmCount >= InpFlipConfirmBars) newState = +1;
+         }
+      }
+      else
+      {
+         //--- v1.11 retrocompatibile (banda ratchet stretta, no confirm)
+         if(prevState == +1 && g_htf_close[i] < finalLow) newState = -1;
+         else if(prevState == -1 && g_htf_close[i] > finalUp) newState = +1;
+      }
+
+      g_htf_fUp      [i] = finalUp;
+      g_htf_fLow     [i] = finalLow;
+      g_htf_fUpFlip  [i] = finalUpFlip;
+      g_htf_fLowFlip [i] = finalLowFlip;
+      g_htf_state    [i] = newState;
    }
 
    // Conta transizioni di stato su tutta la cache HTF (solo in DEBUG)
@@ -1264,6 +1606,142 @@ void ComputeHTFState()
             (InpEngineMode == ENGINE_SUPERTREND_CLASSIC ? "Supertrend(HL2)" : "MA+ATR"),
             flips, longBars, shortBars, warmupBars));
    }
+}
+
+//+------------------------------------------------------------------+
+//| ComputeHTFEfficiencyRatio — Kaufman Efficiency Ratio (v1.09)     |
+//+------------------------------------------------------------------+
+// ER[i] = |close[i] - close[i+N]| / Σ |close[i+k] - close[i+k+1]|  (k=0..N-1)
+// Range: 0..1 (1 = trend perfetto, 0 = chop pieno).
+//
+// Stato VALID/CHOP con ISTERESI simmetrica (evita nervous flip):
+//   ENTER VALID: ER > threshold + hysteresis   (es. 0.40)
+//   EXIT  VALID: ER < threshold - hysteresis   (es. 0.30)
+//
+// NOTA indexing: g_htf_close è SERIES (0 = newest). Per N bar in dietro
+// rispetto a i, uso g_htf_close[i + N]. Itera dalla bar più vecchia
+// (g_htfBarsUsed-1) alla più recente (0) per propagare coerentemente
+// lo stato isteresi.
+//
+// v1.09: questa funzione NON modifica g_htf_state — popola solo
+// g_htf_er[] e g_htf_erState[] per osservazione.
+void ComputeHTFEfficiencyRatio()
+{
+   int N = InpERLength;
+   int total = g_htfBarsUsed;
+
+   if(total < N + 2)
+   {
+      RBTLog(LOG_DEBUG, "ER",
+         StringFormat("Storia insufficiente: %d bars (serve N+2=%d)", total, N+2));
+      return;  // g_htf_er già inizializzato a EMPTY_VALUE, g_htf_erState a 0
+   }
+
+   double thrHi = InpERThreshold + InpERHysteresis;
+   double thrLo = InpERThreshold - InpERHysteresis;
+
+   // Itero da bar più vecchia (series alto) a più recente (series 0).
+   // state eredita dal "bar precedente" = i+1 in series.
+   int validCount = 0;
+   for(int i = total - 1; i >= 0; i--)
+   {
+      // Warmup: ho bisogno di N+1 close successive (più vecchie)
+      if(i + N >= total)
+      {
+         g_htf_er[i]      = EMPTY_VALUE;
+         g_htf_erState[i] = 0;
+         continue;
+      }
+
+      double change = MathAbs(g_htf_close[i] - g_htf_close[i + N]);
+      double vol    = 0.0;
+      for(int k = 0; k < N; k++)
+         vol += MathAbs(g_htf_close[i + k] - g_htf_close[i + k + 1]);
+
+      double er = (vol > 0.0) ? change / vol : 0.0;
+      g_htf_er[i] = er;
+
+      // Isteresi: eredita stato da bar più vecchia (i+1), aggiorna se cross soglie
+      int prevState = (i + 1 < total) ? g_htf_erState[i + 1] : 0;
+      int newState  = prevState;
+      if(prevState == 0 && er >= thrHi) newState = 1;  // enter VALID
+      if(prevState == 1 && er <= thrLo) newState = 0;  // exit VALID
+      g_htf_erState[i] = newState;
+      if(newState == 1) validCount++;
+   }
+
+   RBTLog(LOG_DEBUG, "ER",
+      StringFormat("OK — N=%d thr=%.2f±%.2f er[0]=%s state[0]=%s validBars=%d/%d",
+         N, InpERThreshold, InpERHysteresis,
+         DoubleToString(g_htf_er[0], 3),
+         (g_htf_erState[0] == 1 ? "VALID" : "CHOP"),
+         validCount, total));
+}
+
+//+------------------------------------------------------------------+
+//| ComputeHTFSuperSmoother — Ehlers 2-pole Butterworth (v1.09)      |
+//+------------------------------------------------------------------+
+// Fonte: John Ehlers — "Cybernetic Analysis for Stocks and Futures" (2004)
+// http://www.davenewberg.com/Trading/TS_Code/Ehlers_Indicators/2_pole_SuperSmoother.html
+//
+// Coefficienti:
+//   a1 = exp(-sqrt(2)·π / N)
+//   b1 = 2·a1·cos(sqrt(2)·π / N)
+//   c2 = b1
+//   c3 = -a1²
+//   c1 = 1 - c2 - c3
+//
+// Ricorsione (natural indexing: i-1 = bar precedente):
+//   SS[i] = c1·(close[i]+close[i-1])/2 + c2·SS[i-1] + c3·SS[i-2]
+//
+// Selettività: 12 dB/ottava (vs 6 dB/ottava di EMA). A parità di lag,
+// smoothness superiore. Default Ehlers: N=15 (wave cycle noise cutoff).
+//
+// Implementazione: calcolo in natural-indexed temp array (come KAMA/JMA),
+// poi conversione a series per g_htf_ss.
+void ComputeHTFSuperSmoother()
+{
+   int N     = InpSuperSmoothPeriod;
+   int total = g_htfBarsUsed;
+
+   if(N < 2 || total < 3)
+   {
+      RBTLog(LOG_DEBUG, "SS",
+         StringFormat("Skip: N=%d total=%d (serve N>=2 e total>=3)", N, total));
+      return;  // g_htf_ss già EMPTY_VALUE
+   }
+
+   // Coefficienti Butterworth 2-pole
+   double sqrt2pi_N = MathSqrt(2.0) * M_PI / (double)N;
+   double a1 = MathExp(-sqrt2pi_N);
+   double b1 = 2.0 * a1 * MathCos(sqrt2pi_N);
+   double c2 = b1;
+   double c3 = -a1 * a1;
+   double c1 = 1.0 - c2 - c3;
+
+   // Calcolo in natural (i=0 oldest, i=total-1 newest)
+   double closeNat[], ssNat[];
+   ArrayResize(closeNat, total);
+   ArrayResize(ssNat,    total);
+   SeriesToNatural(g_htf_close, closeNat, total);
+
+   // Seed: prime 2 bar = close (warmup, non c'è abbastanza storia per la ricorsione)
+   ssNat[0] = closeNat[0];
+   ssNat[1] = closeNat[1];
+
+   for(int i = 2; i < total; i++)
+   {
+      double avg = 0.5 * (closeNat[i] + closeNat[i - 1]);
+      ssNat[i] = c1 * avg + c2 * ssNat[i - 1] + c3 * ssNat[i - 2];
+   }
+
+   NaturalToSeries(ssNat, g_htf_ss, total);
+
+   RBTLog(LOG_DEBUG, "SS",
+      StringFormat("OK — N=%d a1=%.4f c1=%.4f c2=%.4f c3=%.4f ss[0]=%s ss[last]=%s",
+         N, a1, c1, c2, c3,
+         DoubleToString(g_htf_ss[0], _Digits),
+         DoubleToString(g_htf_ss[total-1], _Digits)));
 }
 
 //+------------------------------------------------------------------+
@@ -1307,6 +1785,8 @@ void ProjectHTFToChart(const int rates_total,
          B_ColorIndex[i] = 2.0;
          B_FlipLong  [i] = EMPTY_VALUE;
          B_FlipShort [i] = EMPTY_VALUE;
+         B_EfficiencyRatio[i] = EMPTY_VALUE;
+         B_SuperSmoother  [i] = EMPTY_VALUE;
          continue;
       }
 
@@ -1325,6 +1805,8 @@ void ProjectHTFToChart(const int rates_total,
          B_ColorIndex[i] = 2.0;
          B_FlipLong  [i] = EMPTY_VALUE;
          B_FlipShort [i] = EMPTY_VALUE;
+         B_EfficiencyRatio[i] = EMPTY_VALUE;
+         B_SuperSmoother  [i] = EMPTY_VALUE;
          continue;
       }
 
@@ -1353,6 +1835,11 @@ void ProjectHTFToChart(const int rates_total,
          B_FlipLong [i] = EMPTY_VALUE;
          B_FlipShort[i] = EMPTY_VALUE;
       }
+
+      // v1.09 observability: proietta ER e SuperSmoother dalla stessa bar HTF
+      // (anti-repainting: stateShift = bar HTF chiusa precedente, identico a state)
+      B_EfficiencyRatio[i] = g_htf_er[stateShift];   // può essere EMPTY_VALUE in warmup
+      B_SuperSmoother  [i] = g_htf_ss[stateShift];   // idem
    }
 }
 
@@ -1361,21 +1848,26 @@ void FillWarmup(const int rates_total)
 {
    for(int i = 0; i < rates_total; i++)
    {
-      B_MainLine  [i] = EMPTY_VALUE;
-      B_Upper     [i] = EMPTY_VALUE;
-      B_Lower     [i] = EMPTY_VALUE;
-      B_State     [i] = 0.0;
-      B_Flip      [i] = 0.0;
-      B_ColorIndex[i] = 2.0;
-      B_FlipLong  [i] = EMPTY_VALUE;
-      B_FlipShort [i] = EMPTY_VALUE;
+      B_MainLine       [i] = EMPTY_VALUE;
+      B_Upper          [i] = EMPTY_VALUE;
+      B_Lower          [i] = EMPTY_VALUE;
+      B_State          [i] = 0.0;
+      B_Flip           [i] = 0.0;
+      B_ColorIndex     [i] = 2.0;
+      B_FlipLong       [i] = EMPTY_VALUE;
+      B_FlipShort      [i] = EMPTY_VALUE;
+      B_EfficiencyRatio[i] = EMPTY_VALUE;
+      B_SuperSmoother  [i] = EMPTY_VALUE;
    }
 }
 
 //--- Periodo effettivamente usato dal tipo MA (JMA usa un input diverso)
 int MAEffectivePeriod()
 {
-   return (InpMAType == BIAS_MA_JMA) ? InpJMAPeriod : InpMAPeriod;
+   if(InpMAType == BIAS_MA_JMA) return InpJMAPeriod;
+   if(InpMAType == BIAS_MA_PMA || InpMAType == BIAS_MA_PMA_OEF)
+      return 2 * InpPMAPeriod;   // v1.13: warmup richiede WMA della WMA
+   return InpMAPeriod;
 }
 
 //--- Short name
@@ -1396,14 +1888,16 @@ string MATypeLabel()
 {
    switch(InpMAType)
    {
-      case BIAS_MA_EMA:  return "EMA";
-      case BIAS_MA_SMA:  return "SMA";
-      case BIAS_MA_SMMA: return "SMMA";
-      case BIAS_MA_LWMA: return "LWMA";
-      case BIAS_MA_HMA:  return "HMA";
-      case BIAS_MA_KAMA:  return "KAMA";
-      case BIAS_MA_JMA:   return "JMA";
-      case BIAS_MA_ZLEMA: return "ZLEMA";
+      case BIAS_MA_EMA:     return "EMA";
+      case BIAS_MA_SMA:     return "SMA";
+      case BIAS_MA_SMMA:    return "SMMA";
+      case BIAS_MA_LWMA:    return "LWMA";
+      case BIAS_MA_HMA:     return "HMA";
+      case BIAS_MA_KAMA:    return "KAMA";
+      case BIAS_MA_JMA:     return "JMA";
+      case BIAS_MA_ZLEMA:   return "ZLEMA";
+      case BIAS_MA_PMA:     return "PMA";       // v1.13
+      case BIAS_MA_PMA_OEF: return "PMA+OEF";   // v1.13
    }
    return "?";
 }
@@ -1422,19 +1916,14 @@ string TFLabel(ENUM_TIMEFRAMES tf)
 //+------------------------------------------------------------------+
 
 //+------------------------------------------------------------------+
-//| ApplyChartTheme — applica tema scuro UTBot-like al chart         |
+//| SaveOriginalChartColors — salva originali UNA SOLA VOLTA (v1.11) |
 //+------------------------------------------------------------------+
-// Salva TUTTI i colori chart originali in variabili globali
-// (g_orig*) per poterli restituire invariati in RestoreChartTheme().
-// Imposta BG navy, candele teal/coral, grid disabilitato, volumi off.
-// CHART_FOREGROUND=false → indicatori disegnati SOPRA le candele
-// (essenziale per vedere la bias line).
-// Flag g_themeApplied previene applicazioni duplicate.
-void ApplyChartTheme()
+// Idempotente: se g_origSaved già true, no-op.
+// Questa funzione NON applica nulla, solo salva lo stato originale.
+void SaveOriginalChartColors()
 {
-   if(g_themeApplied) return;
+   if(g_origSaved) return;
 
-   // Salva i colori correnti del chart per il ripristino
    g_origBG          = (color)ChartGetInteger(0, CHART_COLOR_BACKGROUND);
    g_origFG          = (color)ChartGetInteger(0, CHART_COLOR_FOREGROUND);
    g_origGrid        = (color)ChartGetInteger(0, CHART_COLOR_GRID);
@@ -1450,14 +1939,21 @@ void ApplyChartTheme()
    g_origShowVolumes = (int)  ChartGetInteger(0, CHART_SHOW_VOLUMES);
    g_origForeground  = (bool) ChartGetInteger(0, CHART_FOREGROUND);
 
-   // Applica il tema
+   g_origSaved = true;
+   RBTLog(LOG_DEBUG, "THEME", "Original chart colors saved.");
+}
+
+//+------------------------------------------------------------------+
+//| ApplyThemeColors — applica i colori del tema (idempotente)       |
+//+------------------------------------------------------------------+
+// Può essere chiamata ripetutamente senza side-effects.
+// NON modifica g_origSaved (è SaveOriginalChartColors a farlo).
+// NON modifica g_themeApplied (è il chiamante a gestirlo).
+void ApplyThemeColors()
+{
    ChartSetInteger(0, CHART_COLOR_BACKGROUND,  InpThemeBG);
    ChartSetInteger(0, CHART_COLOR_FOREGROUND,  InpThemeFG);
    ChartSetInteger(0, CHART_COLOR_GRID,        InpThemeGrid);
-   // Candele: code (shadows/wicks) e contorno coerenti col body teal/coral.
-   // UTBot qui metteva BG per nascondere le candele native e usare le sue
-   // DRAW_COLOR_CANDLES. RattBiasTrend non ha candele custom → le shadows
-   // restano visibili con gli stessi colori del body.
    ChartSetInteger(0, CHART_COLOR_CHART_UP,    InpThemeBullCandl);
    ChartSetInteger(0, CHART_COLOR_CHART_DOWN,  InpThemeBearCandl);
    ChartSetInteger(0, CHART_COLOR_CHART_LINE,  InpThemeFG);
@@ -1468,19 +1964,32 @@ void ApplyChartTheme()
    ChartSetInteger(0, CHART_COLOR_VOLUME,      C'80,80,80');
    ChartSetInteger(0, CHART_SHOW_GRID,         InpShowGrid);
    ChartSetInteger(0, CHART_SHOW_VOLUMES,      0);
-   // CHART_FOREGROUND=false → price chart in background, indicatori (bias line,
-   // bande, frecce) disegnati SOPRA le candele. Impostarlo a true nasconderebbe
-   // l'indicatore dietro le candele.
-   ChartSetInteger(0, CHART_FOREGROUND, false);
-
-   g_themeApplied = true;
-   RBTLog(LOG_DEBUG, "THEME", "Dark theme applied (candles teal/coral, grid off, volumes off).");
+   ChartSetInteger(0, CHART_FOREGROUND,        false);
 }
 
-//--- Ripristina i colori originali del chart
+//+------------------------------------------------------------------+
+//| ApplyChartTheme — wrapper backward-compat (v1.11 refactored)     |
+//+------------------------------------------------------------------+
+// Mantiene la signature originale per compatibilità con eventuali
+// chiamate esistenti. Internamente usa i 3 helper atomici.
+void ApplyChartTheme()
+{
+   if(g_themeApplied) return;
+   SaveOriginalChartColors();
+   ApplyThemeColors();
+   ChartRedraw(0);  // v1.11: forza commit visuale (fix race condition)
+   g_themeApplied = true;
+   RBTLog(LOG_DEBUG, "THEME", "Dark theme applied.");
+}
+
+//+------------------------------------------------------------------+
+//| RestoreChartTheme — ripristina i colori originali del chart      |
+//+------------------------------------------------------------------+
+// Ripristina solo se g_origSaved=true E g_themeApplied=true.
+// NON tocca g_origSaved (originali ancora validi per eventuale re-save).
 void RestoreChartTheme()
 {
-   if(!g_themeApplied) return;
+   if(!g_origSaved || !g_themeApplied) return;
 
    ChartSetInteger(0, CHART_COLOR_BACKGROUND,  g_origBG);
    ChartSetInteger(0, CHART_COLOR_FOREGROUND,  g_origFG);
@@ -1497,7 +2006,9 @@ void RestoreChartTheme()
    ChartSetInteger(0, CHART_SHOW_VOLUMES,      g_origShowVolumes);
    ChartSetInteger(0, CHART_FOREGROUND,        g_origForeground);
 
+   ChartRedraw(0);
    g_themeApplied = false;
+   RBTLog(LOG_DEBUG, "THEME", "Original chart colors restored.");
 }
 
 //+------------------------------------------------------------------+
@@ -1579,7 +2090,8 @@ void InitRBTDashboard()
 
    const int card1H   = 104;                          // espansa per 2 righe flip
    const int card2H   = 76;
-   const int bgHeight = 34 + 12 + 18 + card1H + 14 + 18 + card2H + 12;  // 286
+   const int card3H   = 92;                           // v1.09: CARD VOTI PREVIEW (4 righe)
+   const int bgHeight = 34 + 12 + 18 + card1H + 14 + 18 + card2H + 14 + 18 + card3H + 12;  // 406
 
    //--- Outer border (teal accent)
    RBTCreateRect("BORDER", DASH_X - 2, DASH_Y - 2, DASH_W + 4, bgHeight + 4,
@@ -1654,6 +2166,35 @@ void InitRBTDashboard()
    RBTSetLabelText("CFG_ATR_LBL", "ATR");
    RBTCreateLabel("CFG_ATR_VAL", DASH_X + 90,  y_c2 + 50, CLR_TXT_PRIMARY, "Consolas", 9, 16200);
 
+   //--- v1.09 SEZIONE 3: VOTI PREVIEW (observability pack)
+   int y_s3 = y_c2 + card2H + 14;              // 314
+   int y_c3 = y_s3 + 18;                       // 332
+   RBTCreateLabel("S3", DASH_X + 10, y_s3, CLR_SECTION, "Segoe UI", 8, 16100);
+   RBTSetLabelText("S3", "▸ VOTI PREVIEW (non partecipano al gate)");
+
+   RBTCreateRect ("CARD3", DASH_X + 8, y_c3, DASH_CARD_W, card3H,
+                  CLR_CARD_BG, CLR_CARD_BORDER, 16050);
+
+   // V1: Direzionale (B_State)
+   RBTCreateLabel("V1_LBL", DASH_X + 18,  y_c3 + 10, CLR_TXT_DIM,     "Segoe UI", 8, 16200);
+   RBTSetLabelText("V1_LBL", "V1 Direzionale");
+   RBTCreateLabel("V1_VAL", DASH_X + 120, y_c3 + 10, CLR_TXT_PRIMARY, "Consolas", 9, 16200);
+
+   // V2: Kaufman ER (con stato isteresi)
+   RBTCreateLabel("V2_LBL", DASH_X + 18,  y_c3 + 30, CLR_TXT_DIM,     "Segoe UI", 8, 16200);
+   RBTSetLabelText("V2_LBL", "V2 Efficiency");
+   RBTCreateLabel("V2_VAL", DASH_X + 120, y_c3 + 30, CLR_TXT_PRIMARY, "Consolas", 9, 16200);
+
+   // V3: SuperSmoother slope
+   RBTCreateLabel("V3_LBL", DASH_X + 18,  y_c3 + 50, CLR_TXT_DIM,     "Segoe UI", 8, 16200);
+   RBTSetLabelText("V3_LBL", "V3 SS-slope");
+   RBTCreateLabel("V3_VAL", DASH_X + 120, y_c3 + 50, CLR_TXT_PRIMARY, "Consolas", 9, 16200);
+
+   // Agreement preview (cosa voterebbe il committee se attivo)
+   RBTCreateLabel("VAG_LBL", DASH_X + 18,  y_c3 + 72, CLR_TXT_DIM,     "Segoe UI", 8, 16200);
+   RBTSetLabelText("VAG_LBL", "Agreement");
+   RBTCreateLabel("VAG_VAL", DASH_X + 120, y_c3 + 72, CLR_TXT_PRIMARY, "Consolas", 9, 16200);
+
    UpdateRBTDashboard();
 }
 
@@ -1722,6 +2263,78 @@ void UpdateRBTDashboard()
 
    string atrStr = StringFormat("%d × %.2f", InpATRPeriod, InpATRMultiplier);
    RBTSetLabel("CFG_ATR_VAL", atrStr, CLR_TXT_PRIMARY);
+
+   //--- v1.09 CARD3: VOTI PREVIEW (informativo, non influenza gate)
+   int idxLast = sz - 1;
+
+   // V1: replica lo stato GATE corrente (è lo stesso di B_State[last])
+   string v1Txt  = "— WARMUP";
+   color  v1Clr  = CLR_TXT_DIM;
+   if(st > 0.5)      { v1Txt = "✓ LONG";   v1Clr = CLR_STATE_LONG;  }
+   else if(st < -0.5){ v1Txt = "✓ SHORT";  v1Clr = CLR_STATE_SHORT; }
+   RBTSetLabel("V1_VAL", v1Txt, v1Clr);
+
+   // V2: Kaufman ER con stato isteresi
+   double erVal = (idxLast >= 0 && idxLast < ArraySize(B_EfficiencyRatio))
+                  ? B_EfficiencyRatio[idxLast] : EMPTY_VALUE;
+   string v2Txt;
+   color  v2Clr;
+   if(erVal == EMPTY_VALUE)
+   {
+      v2Txt = "— WARMUP";
+      v2Clr = CLR_TXT_DIM;
+   }
+   else
+   {
+      // v1.10 fix: 3 zone coerenti (colore + simbolo + testo allineati)
+      // - ER >= thrHi  → VALID verde
+      // - ER <= thrLo  → CHOP  rosso
+      // - zona intermedia (thrLo..thrHi) → (zone) grigio neutrale
+      // NB: questo è un display semplificato. Lo stato isteresi stateful
+      //     vero è in g_htf_erState[] e viene usato per l'Agreement sotto.
+      double thrHi = InpERThreshold + InpERHysteresis;
+      double thrLo = InpERThreshold - InpERHysteresis;
+      string marker, zoneLbl;
+      if(erVal >= thrHi)      { marker = "✓"; zoneLbl = " VALID";  v2Clr = CLR_STATE_LONG;  }
+      else if(erVal <= thrLo) { marker = "✗"; zoneLbl = " CHOP";   v2Clr = CLR_STATE_SHORT; }
+      else                    { marker = "~"; zoneLbl = " (zone)"; v2Clr = CLR_TXT_SECOND;  }
+      v2Txt = StringFormat("%s %.2f%s", marker, erVal, zoneLbl);
+   }
+   RBTSetLabel("V2_VAL", v2Txt, v2Clr);
+
+   // V3: slope SuperSmoother — confronto ultimi 2 valori (newest vs previous)
+   string v3Txt = "— WARMUP";
+   color  v3Clr = CLR_TXT_DIM;
+   int    v3Vote = 0;
+   int    ssLen = ArraySize(B_SuperSmoother);
+   if(idxLast >= 1 && idxLast < ssLen)
+   {
+      double ssNow  = B_SuperSmoother[idxLast];
+      double ssPrev = B_SuperSmoother[idxLast - 1];
+      if(ssNow != EMPTY_VALUE && ssPrev != EMPTY_VALUE)
+      {
+         if(ssNow > ssPrev)      { v3Txt = "✓ UP";   v3Clr = CLR_STATE_LONG;  v3Vote = +1; }
+         else if(ssNow < ssPrev) { v3Txt = "✗ DOWN"; v3Clr = CLR_STATE_SHORT; v3Vote = -1; }
+         else                    { v3Txt = "= FLAT"; v3Clr = CLR_TXT_SECOND;  v3Vote =  0; }
+      }
+   }
+   RBTSetLabel("V3_VAL", v3Txt, v3Clr);
+
+   // Agreement preview: cosa voterebbe un committee AND-stretto se attivo.
+   // Regola: LONG ⇔ V1=+1 AND V2=VALID AND V3=+1; analogo SHORT; altrimenti NEUTRAL.
+   //
+   // v1.10 fix: legge lo stato isteresi STATEFUL da g_htf_erState[0] (bar HTF
+   // più recente), NON una soglia istantanea su erVal. Questo riproduce
+   // esattamente cosa farebbe il committee in v1.10+ (rispetta il memoria
+   // dell'isteresi entry/exit, non solo il valore corrente).
+   bool v2Valid = (g_htfBarsUsed > 0 && g_htf_erState[0] == 1);
+   int  v1Vote  = (st > 0.5) ? +1 : (st < -0.5 ? -1 : 0);
+   string agTxt;
+   color  agClr;
+   if(v1Vote == +1 && v2Valid && v3Vote == +1)      { agTxt = "LONG (3/3)";    agClr = CLR_STATE_LONG;  }
+   else if(v1Vote == -1 && v2Valid && v3Vote == -1) { agTxt = "SHORT (3/3)";   agClr = CLR_STATE_SHORT; }
+   else                                              { agTxt = "NEUTRAL";      agClr = CLR_TXT_DIM;     }
+   RBTSetLabel("VAG_VAL", agTxt, agClr);
 }
 
 //--- Rimuovi tutti gli oggetti dashboard (prefix scan)
